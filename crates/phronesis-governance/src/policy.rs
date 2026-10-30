@@ -1195,6 +1195,9 @@ impl CompiledPolicy {
         self.rules
             .iter()
             .filter(|r| match selection {
+                // Hook(None) selects nothing: a parked rule never runs,
+                // even when its disk phase string would equal "none".
+                Selection::Hook(Phase::None) => false,
                 Selection::Hook(phase) => phase.as_str() == r.phase.as_str(),
                 // Baseline behavior (filter_audit_rules): exactly
                 // audit == Some(true), regardless of phase.
@@ -1202,5 +1205,1086 @@ impl CompiledPolicy {
             })
             .map(|r| rule_from_disk(r).0)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(pred: &str, arg: &str) -> WhenClause {
+        WhenClause::Leaf(DiskCondition {
+            predicate: pred.into(),
+            args: vec![arg.into()],
+            script: None,
+        })
+    }
+
+    fn leaf_of(clause: &WhenClause) -> &DiskCondition {
+        match clause {
+            WhenClause::Leaf(c) => c,
+            WhenClause::Or(_) => panic!("expected leaf"),
+        }
+    }
+
+    fn src(id: &str, when: Vec<WhenClause>) -> SourceRule {
+        SourceRule {
+            id: id.into(),
+            phase: "pre".into(),
+            priority: 1,
+            when,
+            then: DiskAction {
+                action_type: "log".into(),
+                params: vec!["m".into()],
+                ..Default::default()
+            },
+            silent: None,
+            audit: None,
+            doc_excepted: None,
+            binds: None,
+        }
+    }
+
+    fn doc(json: &str, source_id: &str) -> ParsedPolicy {
+        parse(json, source_id).unwrap_or_else(|e| panic!("parse failed: {e}"))
+    }
+
+    fn parse_rule(json: &str) -> Result<SourceRule, String> {
+        serde_json::from_str::<SourceRule>(json).map_err(|e| e.to_string())
+    }
+
+    fn err_message(err: &PolicyError) -> &str {
+        match err {
+            PolicyError::Malformed { message, .. }
+            | PolicyError::Invalid { message, .. }
+            | PolicyError::Unfold { message, .. } => message,
+        }
+    }
+
+    fn err_kind(err: &PolicyError) -> &'static str {
+        match err {
+            PolicyError::Malformed { .. } => "malformed",
+            PolicyError::Invalid { .. } => "invalid",
+            PolicyError::Unfold { .. } => "unfold",
+        }
+    }
+
+    #[test]
+    fn v2_leaf_condition_single_string_arg() {
+        let json = r#"{ "new_content_contains": ".unwrap()" }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Leaf(c) => {
+                assert_eq!(c.predicate, "new_content_contains");
+                assert_eq!(c.args, vec![".unwrap()".to_string()]);
+                assert_eq!(c.script, None);
+            }
+            _ => panic!("expected Leaf"),
+        }
+    }
+
+    #[test]
+    fn v2_leaf_condition_multi_arg_array() {
+        let json = r#"{ "function_param_count_high": ["?file", "?fn", "?count"] }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Leaf(c) => assert_eq!(
+                c.args,
+                vec!["?file".to_string(), "?fn".to_string(), "?count".to_string()]
+            ),
+            _ => panic!("expected Leaf"),
+        }
+    }
+
+    #[test]
+    fn v2_leaf_condition_zero_arg_bool() {
+        let json = r#"{ "some_zero_arg_predicate": true }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Leaf(c) => {
+                assert_eq!(c.predicate, "some_zero_arg_predicate");
+                assert!(c.args.is_empty());
+            }
+            _ => panic!("expected Leaf"),
+        }
+    }
+
+    #[test]
+    fn v2_script_condition() {
+        let json = r#"{ "__script__": "rank > 5" }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Leaf(c) => {
+                assert_eq!(c.predicate, "__script__");
+                assert_eq!(c.script, Some("rank > 5".to_string()));
+            }
+            _ => panic!("expected Leaf"),
+        }
+    }
+
+    #[test]
+    fn v2_or_clause() {
+        let json = r#"{ "or": [ { "new_content_contains": "cargo test" }, { "new_content_contains": "cargo nextest" } ] }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Or(alts) => {
+                assert_eq!(alts.len(), 2);
+                assert_eq!(leaf_of(&alts[0]).args, vec!["cargo test".to_string()]);
+                assert_eq!(leaf_of(&alts[1]).args, vec!["cargo nextest".to_string()]);
+            }
+            _ => panic!("expected Or"),
+        }
+    }
+
+    #[test]
+    fn v2_clause_rejects_malformed_inputs() {
+        assert!(serde_json::from_str::<WhenClause>(r#""just_a_string""#).is_err());
+        assert!(serde_json::from_str::<WhenClause>(r#"{"a": true, "b": true}"#).is_err());
+        assert!(serde_json::from_str::<WhenClause>(r#"{"or": "not_an_array"}"#).is_err());
+        assert!(serde_json::from_str::<WhenClause>(r#"{"pred": 42}"#).is_err());
+    }
+
+    #[test]
+    fn when_clause_rejects_non_object_and_key_count() {
+        for bad in ["\"str\"", "5", "[]", "null", "true"] {
+            let err = serde_json::from_str::<WhenClause>(bad).unwrap_err();
+            assert!(err.to_string().contains("JSON object"), "{bad}: {err}");
+        }
+        assert!(
+            serde_json::from_str::<WhenClause>("{}")
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one key")
+        );
+        assert!(
+            serde_json::from_str::<WhenClause>(r#"{"a": "1", "b": "2"}"#)
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one key")
+        );
+    }
+
+    #[test]
+    fn when_clause_rejects_bad_arg_types() {
+        for src in [r#"{"p": 5}"#, r#"{"p": {"x": 1}}"#, r#"{"p": null}"#] {
+            let err = serde_json::from_str::<WhenClause>(src).unwrap_err();
+            assert!(
+                err.to_string().contains("string, array, or bool"),
+                "{src}: {err}"
+            );
+        }
+        let err = serde_json::from_str::<WhenClause>(r#"{"p": ["ok", 1]}"#).unwrap_err();
+        assert!(err.to_string().contains("must contain strings"), "{err}");
+    }
+
+    #[test]
+    fn when_clause_rejects_bad_or_shapes() {
+        let err = serde_json::from_str::<WhenClause>(r#"{"or": "not-an-array"}"#).unwrap_err();
+        assert!(err.to_string().contains("array of clauses"), "{err}");
+        let err = serde_json::from_str::<WhenClause>(r#"{"or": [{"a": "1"}, 5]}"#).unwrap_err();
+        assert!(err.to_string().contains("JSON object"), "{err}");
+    }
+
+    #[test]
+    fn when_clause_round_trips_through_serialize() {
+        for s in [
+            r#"{"a":"1"}"#,
+            r#"{"b":["x","y"]}"#,
+            r#"{"c":true}"#,
+            r#"{"__script__":"x > 1"}"#,
+            r#"{"or":[{"a":"1"},{"or":[{"b":true},{"__script__":"y"}]}]}"#,
+        ] {
+            let clause: WhenClause = serde_json::from_str(s).expect("parse");
+            let out = serde_json::to_string(&clause).expect("serialize");
+            let back: WhenClause = serde_json::from_str(&out).expect("reparse");
+            let again = serde_json::to_string(&back).expect("reserialize");
+            assert_eq!(out, again, "round trip unstable for {s}");
+            let v1: serde_json::Value = serde_json::from_str(s).unwrap();
+            let v2: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(v1, v2, "semantic drift for {s}");
+        }
+    }
+
+    #[test]
+    fn source_rule_parses_v2() {
+        let json = r#"{
+            "id": "r1", "phase": "pre", "priority": 10, "audit": true, "binds": false,
+            "when": [ { "new_content_contains": ".unwrap()" }, { "file_path_matches": "src" } ],
+            "then": { "block": "no unwrap" }
+        }"#;
+        let sr = parse_rule(json).unwrap();
+        assert_eq!(sr.id, "r1");
+        assert_eq!(sr.when.len(), 2);
+        assert_eq!(sr.then.action_type, "constraint_violation");
+        assert_eq!(sr.audit, Some(true));
+    }
+
+    #[test]
+    fn source_rule_parses_v1_legacy() {
+        let json = r#"{
+            "id": "r1", "phase": "pre", "priority": 10,
+            "conditions": [ {"predicate":"new_content_contains","args":[".unwrap()"]} ],
+            "actions": [ {"action_type":"constraint_violation","params":["no unwrap"]} ]
+        }"#;
+        let sr = parse_rule(json).unwrap();
+        assert_eq!(sr.id, "r1");
+        assert_eq!(sr.when.len(), 1);
+        assert_eq!(leaf_of(&sr.when[0]).predicate, "new_content_contains");
+        assert_eq!(sr.then.action_type, "constraint_violation");
+    }
+
+    #[test]
+    fn source_rule_serializes_v2_round_trip() {
+        let json = r#"{
+            "id": "r1", "phase": "pre", "priority": 10, "audit": true, "binds": false,
+            "when": [ { "new_content_contains": ".unwrap()" }, { "file_path_matches": "src" } ],
+            "then": { "block": "no unwrap" }
+        }"#;
+        let sr = parse_rule(json).unwrap();
+        let out = serde_json::to_value(&sr).unwrap();
+        let sr2 = parse_rule(&serde_json::to_string(&out).unwrap()).unwrap();
+        assert_eq!(sr2.id, "r1");
+        assert_eq!(sr2.when.len(), 2);
+        assert_eq!(sr2.then.action_type, "constraint_violation");
+        assert_eq!(sr2.binds, Some(false));
+        assert!(out.get("when").is_some());
+        assert!(out.get("conditions").is_none());
+        assert_eq!(out["then"]["block"], "no unwrap");
+        assert_eq!(out["when"][0]["new_content_contains"], ".unwrap()");
+        assert_eq!(out["binds"], false);
+    }
+
+    #[test]
+    fn source_rule_serializes_or_clause() {
+        let json = r#"{
+            "id": "r1", "phase": "pre", "priority": 5,
+            "when": [ { "or": [ { "new_content_contains": "a" }, { "new_content_contains": "b" } ] } ],
+            "then": { "warn": "m" }
+        }"#;
+        let sr = parse_rule(json).unwrap();
+        let out = serde_json::to_value(&sr).unwrap();
+        assert!(out["when"][0]["or"].is_array());
+        assert_eq!(out["when"][0]["or"][0]["new_content_contains"], "a");
+    }
+
+    #[test]
+    fn source_rule_omits_absent_flags_on_serialize() {
+        let sr =
+            parse_rule(r#"{ "id": "r1", "when": [ { "p": true } ], "then": { "warn": "m" } }"#)
+                .unwrap();
+        let out = serde_json::to_value(&sr).unwrap();
+        assert!(out.get("audit").is_none());
+        assert!(out.get("silent").is_none());
+        assert!(out.get("doc_excepted").is_none());
+        assert!(out.get("binds").is_none());
+        assert_eq!(out["phase"], "pre");
+        assert_eq!(out["priority"], 0);
+    }
+
+    #[test]
+    fn emit_capsule_structured_action_round_trips_canonically() {
+        let value = serde_json::json!({"emit_capsule": {
+            "id": "review-layering", "body": "why: ?reason", "lifecycle": "session",
+            "priority": 50, "max_bytes": 512, "expires_after": "7d"
+        }});
+        let doc = doc(
+            &format!(
+                r#"{{ "rules": [ {{ "id": "c", "when": [{{"p": true}}], "then": {value} }} ] }}"#
+            ),
+            "t",
+        );
+        let action = &doc.file.rules[0].actions[0];
+        assert!(action.params.is_empty());
+        assert_eq!(action.data.as_ref().unwrap()["body"], "why: ?reason");
+        let sr = &doc_file_source(&doc)[0];
+        let out = serde_json::to_value(sr).unwrap();
+        assert_eq!(out["then"], value);
+    }
+
+    // Helper only used above: rebuild a SourceRule from the parsed doc's
+    // first flat rule (single-condition, no OR), exercising the inverse
+    // action mapping.
+    fn doc_file_source(doc: &ParsedPolicy) -> Vec<SourceRule> {
+        doc.file
+            .rules
+            .iter()
+            .map(|r| {
+                diskrule_to_source_for_tests(r)
+            })
+            .collect()
+    }
+
+    fn diskrule_to_source_for_tests(d: &DiskRule) -> SourceRule {
+        SourceRule {
+            id: d.id.clone(),
+            phase: d.phase.clone(),
+            priority: d.priority,
+            when: d.conditions.iter().cloned().map(WhenClause::Leaf).collect(),
+            then: d.actions.first().cloned().unwrap_or_default(),
+            silent: d.silent,
+            audit: d.audit,
+            doc_excepted: d.doc_excepted,
+            binds: None,
+        }
+    }
+
+    #[test]
+    fn emit_capsule_rejects_invalid_contract_values() {
+        for value in [
+            serde_json::json!({"emit_capsule":{"id":"?dynamic","body":"x","lifecycle":"session"}}),
+            serde_json::json!({"emit_capsule":{"id":"x","body":"x","lifecycle":"forever"}}),
+            serde_json::json!({"emit_capsule":{"id":"x","body":"x","lifecycle":"persistent","expires_after":"0d"}}),
+            serde_json::json!({"emit_capsule":{"id":"x","body":"x","lifecycle":"session","unknown":true}}),
+        ] {
+            let json = format!(
+                r#"{{ "rules": [ {{ "id": "c", "when": [{{"p": true}}], "then": {value} }} ] }}"#
+            );
+            let err = parse(&json, "t").unwrap_err();
+            assert_eq!(err_kind(&err), "malformed", "accepted {value}");
+            assert!(err_message(&err).contains("Invalid capsule:"), "{err}");
+        }
+    }
+
+    #[test]
+    fn emit_capsule_via_v1_actions_is_rejected() {
+        let json = r#"{ "rules": [ { "id": "c",
+            "when": [ { "p": true } ],
+            "actions": [ { "action_type": "emit_capsule", "params": [] } ] } ] }"#;
+        let err = parse(json, "t").unwrap_err();
+        assert!(
+            err_message(&err).contains("use the v2 `then` form for emit_capsule"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn strict_load_errors_fail_closed_with_rule_names() {
+        let cases: Vec<(&str, &str, &str)> = vec![
+            (
+                r#"{ "rules": [ { "id": "r1", "phase": "Pre", "when": [ { "p": true } ], "then": { "warn": "m" } } ] }"#,
+                "malformed",
+                "rule `r1`: field `phase` has invalid value `Pre`; allowed: pre, post, audit, none",
+            ),
+            (
+                r#"{ "rules": [ { "id": "r1", "phase": 5, "when": [ { "p": true } ], "then": { "warn": "m" } } ] }"#,
+                "malformed",
+                "rule `r1`: field `phase` must be a string, got `5`",
+            ),
+            (
+                r#"{ "rules": [ { "id": "r1", "priority": 99999999999, "when": [ { "p": true } ], "then": { "warn": "m" } } ] }"#,
+                "malformed",
+                "rule `r1`: field `priority` must be a 32-bit integer",
+            ),
+            (
+                r#"{ "rules": [ { "id": "r1", "unknown_key": 1, "when": [ { "p": true } ], "then": { "warn": "m" } } ] }"#,
+                "malformed",
+                "rule `r1`: unknown key `unknown_key`",
+            ),
+            (
+                r#"{ "rules": [ { "id": "r1", "when": [], "then": { "warn": "m" } } ] }"#,
+                "malformed",
+                "rule `r1`: field `when` is empty; a rule needs at least one condition",
+            ),
+            (
+                r#"{ "rules": [ { "id": "r1", "when": [ { "p": true } ] } ] }"#,
+                "malformed",
+                "rule `r1`: rule has neither `then` nor `actions`",
+            ),
+            (
+                r#"{ "rules": [ { "id": "r1", "when": [ { "p": true } ], "then": { "explode": "m" } } ] }"#,
+                "malformed",
+                "rule `r1`: field `then` has unknown verb `explode`; allowed: block, warn, log, emit_capsule",
+            ),
+        ];
+        for (json, kind, needle) in cases {
+            let err = parse(json, "doc").unwrap_err();
+            assert_eq!(err_kind(&err), kind, "{json}: {err}");
+            if needle != "unused placeholder" {
+                assert!(
+                    err_message(&err).contains(needle),
+                    "message mismatch: {err} (want substring {needle})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rejects_both_when_and_conditions() {
+        let json = r#"{ "rules": [ { "id": "r1", "when": [ { "p": true } ],
+            "conditions": [ {"predicate":"q","args":[]} ],
+            "then": { "warn": "m" } } ] }"#;
+        let err = parse(json, "t").unwrap_err();
+        assert!(
+            err_message(&err).contains("both `when` and `conditions`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_both_then_and_actions() {
+        let json = r#"{ "rules": [ { "id": "r1", "when": [ { "p": true } ],
+            "then": { "warn": "m" }, "actions": [ {"action_type":"log","params":["m"]} ] } ] }"#;
+        let err = parse(json, "t").unwrap_err();
+        assert!(
+            err_message(&err).contains("both `then` and `actions`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_malformed_json_and_missing_id() {
+        let err = parse("{not valid", "doc").unwrap_err();
+        assert_eq!(err_kind(&err), "malformed");
+        let err = parse(
+            r#"{ "rules": [ { "when": [ { "p": true } ], "then": { "warn": "m" } } ] }"#,
+            "doc",
+        )
+        .unwrap_err();
+        assert!(
+            err_message(&err).contains("rule missing non-empty string `id`"),
+            "{err}"
+        );
+        let err = parse(
+            r#"{ "rules": [ { "id": "", "when": [ { "p": true } ], "then": { "warn": "m" } } ] }"#,
+            "doc",
+        )
+        .unwrap_err();
+        assert!(
+            err_message(&err).contains("rule missing non-empty string `id`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn source_id_is_opaque_in_errors() {
+        let err = parse("{not valid", "pack:rust/starter").unwrap_err();
+        match &err {
+            PolicyError::Malformed { source_id, message } => {
+                assert_eq!(source_id, "pack:rust/starter");
+                assert!(!message.contains("pack"), "{message}");
+            }
+            other => panic!("wrong kind: {other}"),
+        }
+        assert!(
+            err.to_string()
+                .contains("rules source `pack:rust/starter` is malformed")
+        );
+    }
+
+    #[test]
+    fn v1_non_string_arg_errors() {
+        let json = r#"{ "rules": [ { "id": "r1",
+            "conditions": [ {"predicate":"q","args":[5]} ],
+            "actions": [ {"action_type":"log","params":["m"]} ] } ] }"#;
+        let err = parse(json, "t").unwrap_err();
+        assert!(err_message(&err).contains("conditions[0].args"), "{err}");
+    }
+
+    #[test]
+    fn v1_unknown_condition_key_errors() {
+        let json = r#"{ "rules": [ { "id": "r1",
+            "conditions": [ {"predicate":"q","args":[],"bogus":1} ],
+            "actions": [ {"action_type":"log","params":["m"]} ] } ] }"#;
+        let err = parse(json, "t").unwrap_err();
+        assert!(err_message(&err).contains("unknown key `bogus`"), "{err}");
+    }
+
+    #[test]
+    fn v1_two_actions_errors() {
+        let json = r#"{ "rules": [ { "id": "r1", "when": [ { "p": true } ],
+            "actions": [ {"action_type":"log","params":["m"]}, {"action_type":"log","params":["n"]} ] } ] }"#;
+        let err = parse(json, "t").unwrap_err();
+        assert!(
+            err_message(&err).contains("field `actions` must hold exactly one action, got 2"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn unfold_no_or_passthrough() {
+        let s = src("r", vec![leaf("a", "1"), leaf("b", "2")]);
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "r");
+        assert_eq!(out[0].conditions.len(), 2);
+    }
+
+    #[test]
+    fn unfold_single_or_two_alternatives() {
+        let s = src(
+            "r",
+            vec![
+                WhenClause::Or(vec![leaf("a", "1"), leaf("b", "2")]),
+                leaf("c", "3"),
+            ],
+        );
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "r#or0");
+        assert_eq!(out[1].id, "r#or1");
+        assert!(out[0].conditions.iter().any(|c| c.predicate == "c"));
+        assert!(out[0].conditions.iter().any(|c| c.predicate == "a"));
+        assert!(out[1].conditions.iter().any(|c| c.predicate == "b"));
+    }
+
+    #[test]
+    fn unfold_multi_or_cartesian() {
+        let s = src(
+            "r",
+            vec![
+                WhenClause::Or(vec![leaf("a", "1"), leaf("b", "2")]),
+                WhenClause::Or(vec![leaf("c", "3"), leaf("d", "4")]),
+            ],
+        );
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 4);
+        let ids: Vec<&str> = out.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["r#or0-or0", "r#or0-or1", "r#or1-or0", "r#or1-or1"]
+        );
+    }
+
+    #[test]
+    fn unfold_nested_or_flattens() {
+        let s = src(
+            "r",
+            vec![WhenClause::Or(vec![
+                leaf("a", "1"),
+                WhenClause::Or(vec![leaf("b", "2"), leaf("c", "3")]),
+            ])],
+        );
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 3); // a, b, c
+    }
+
+    #[test]
+    fn unfold_empty_or_errors_unfold_kind() {
+        let s = src("r", vec![WhenClause::Or(vec![])]);
+        let err = unfold_or(&s).unwrap_err();
+        assert_eq!(err_kind(&err), "unfold");
+        assert!(
+            err_message(&err).contains("has an empty `or` (unsatisfiable)"),
+            "{err}"
+        );
+        // parse() maps the unfold error onto the document's opaque source id.
+        let err = parse(
+            r#"{ "rules": [ { "id": "r", "when": [ { "or": [] } ], "then": { "warn": "m" } } ] }"#,
+            "doc",
+        )
+        .unwrap_err();
+        match &err {
+            PolicyError::Unfold { source_id, message } => {
+                assert_eq!(source_id, "doc");
+                assert!(message.contains("empty `or`"), "{message}");
+            }
+            other => panic!("wrong kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn unfold_single_element_or_degenerates() {
+        let s = src("r", vec![WhenClause::Or(vec![leaf("a", "1")])]);
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "r"); // no suffix when only one product
+    }
+
+    #[test]
+    fn large_or_expansion_yields_diagnostic_not_stderr() {
+        let alts: Vec<WhenClause> = (0..7)
+            .map(|i| {
+                WhenClause::Or(vec![
+                    leaf(&format!("p{i}a"), "1"),
+                    leaf(&format!("p{i}b"), "2"),
+                ])
+            })
+            .collect();
+        let s = src("r", alts);
+        let (out, diagnostics) = unfold_or_with_diagnostics(&s).unwrap();
+        assert_eq!(out.len(), 128);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].rule_id(), "r");
+        assert!(
+            diagnostics[0]
+                .message()
+                .contains("expands to 128 rules via OR — consider simplifying"),
+            "{}",
+            diagnostics[0].message()
+        );
+        // 32 or fewer: no diagnostic.
+        let alts: Vec<WhenClause> = (0..5)
+            .map(|i| {
+                WhenClause::Or(vec![
+                    leaf(&format!("p{i}a"), "1"),
+                    leaf(&format!("p{i}b"), "2"),
+                ])
+            })
+            .collect();
+        assert_eq!(unfold_or(&src("r", alts.clone())).unwrap().len(), 32);
+        let (_, diagnostics) = unfold_or_with_diagnostics(&src("r", alts)).unwrap();
+        assert!(diagnostics.is_empty(), "32 is not large");
+    }
+
+    #[test]
+    fn base_rule_id_strips_or_expansion_suffixes() {
+        assert_eq!(base_rule_id("r"), "r");
+        assert_eq!(base_rule_id("r#or0"), "r");
+        assert_eq!(base_rule_id("r#or0-or1"), "r");
+        assert_eq!(base_rule_id("r#or0-or1-or2"), "r");
+        assert_eq!(
+            base_rule_id("warn-untested-risky-call#or4"),
+            "warn-untested-risky-call"
+        );
+        // Merely containing "#or" is not an expansion suffix.
+        assert_eq!(base_rule_id("x#organic"), "x#organic");
+        assert_eq!(base_rule_id("r#or"), "r#or");
+    }
+
+    #[test]
+    fn parse_source_identical_duplicates_dedupe_with_diagnostic() {
+        let json = r#"{ "rules": [
+            { "id": "r1", "when": [ { "p": true } ], "then": { "warn": "m" } },
+            { "id": "r1", "when": [ { "p": true } ], "then": { "warn": "m" } },
+            { "id": "r2", "when": [ { "q": true } ], "then": { "log": "m" } },
+            { "id": "r2", "when": [ { "q": true } ], "then": { "log": "m" } },
+            { "id": "r2", "when": [ { "q": true } ], "then": { "log": "m" } }
+        ] }"#;
+        let parsed = parse_source(json, "doc").unwrap();
+        assert_eq!(parsed.rules.len(), 2);
+        let dupes: Vec<&str> = parsed.diagnostics.iter().map(|d| d.rule_id()).collect();
+        assert_eq!(dupes, vec!["r1", "r2"], "one diagnostic per rule id");
+        for d in &parsed.diagnostics {
+            assert!(
+                d.message().contains(
+                    "more than once with identical content; using one copy — delete the extras"
+                ),
+                "{}",
+                d.message()
+            );
+        }
+        // parse() propagates the same diagnostics and keeps one flat rule each.
+        let parsed = parse(json, "doc").unwrap();
+        assert_eq!(parsed.file.rules.len(), 2);
+        assert_eq!(parsed.diagnostics.len(), 2);
+    }
+
+    #[test]
+    fn parse_source_differing_duplicates_error() {
+        let json = r#"{ "rules": [
+            { "id": "r1", "when": [ { "p": true } ], "then": { "warn": "m" } },
+            { "id": "r1", "when": [ { "p": true } ], "then": { "warn": "different" } }
+        ] }"#;
+        let err = parse_source(json, "doc").unwrap_err();
+        assert_eq!(err_kind(&err), "invalid");
+        assert!(
+            err_message(&err)
+                .contains("duplicate rule id `r1` with differing definitions; keep the one you want and delete the others (each rule id must appear once per file)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_keeps_first_position_for_identical_duplicates() {
+        let json = r#"{ "rules": [
+            { "id": "a", "priority": 1, "when": [ { "p": true } ], "then": { "log": "first" } },
+            { "id": "b", "priority": 2, "when": [ { "p": true } ], "then": { "log": "mid" } },
+            { "id": "a", "priority": 1, "when": [ { "p": true } ], "then": { "log": "first" } }
+        ] }"#;
+        let parsed = parse(json, "doc").unwrap();
+        let ids: Vec<(&str, i32)> = parsed
+            .file
+            .rules
+            .iter()
+            .map(|r| (r.id.as_str(), r.priority))
+            .collect();
+        assert_eq!(ids, vec![("a", 1), ("b", 2)]);
+    }
+
+    #[test]
+    fn selection_hook_matches_phase_exactly_ignoring_audit_flag() {
+        let mk = |id: &str, phase: &str, audit: Option<bool>| DiskRule {
+            id: id.into(),
+            phase: phase.into(),
+            priority: 1,
+            conditions: vec![DiskCondition {
+                predicate: "p".into(),
+                args: vec![],
+                script: None,
+            }],
+            actions: vec![DiskAction {
+                action_type: "log".into(),
+                params: vec![],
+                ..Default::default()
+            }],
+            silent: None,
+            audit,
+            doc_excepted: None,
+        };
+        let policy = CompiledPolicy::compile(vec![
+            mk("pre-a", "pre", None),
+            mk("pre-b", "pre", Some(true)),
+            mk("post", "post", Some(true)),
+            mk("audit-phase", "audit", Some(true)),
+            mk("parked-audit", "none", Some(true)),
+            mk("parked", "none", None),
+        ])
+        .unwrap();
+        let ids = |s: Selection| -> Vec<String> {
+            policy.select(s).iter().map(|r| r.id.clone()).collect()
+        };
+        // Hook pre: audit flag ignored.
+        assert_eq!(ids(Selection::Hook(Phase::Pre)), vec!["pre-a", "pre-b"]);
+        assert_eq!(ids(Selection::Hook(Phase::Post)), vec!["post"]);
+        assert_eq!(ids(Selection::Hook(Phase::Audit)), vec!["audit-phase"]);
+        // None never runs.
+        assert!(ids(Selection::Hook(Phase::None)).is_empty());
+        // Audit mode: exactly audit == Some(true), regardless of phase —
+        // including the parked `none` rule (preserved baseline discrepancy).
+        assert_eq!(
+            ids(Selection::Audit),
+            vec!["pre-b", "post", "audit-phase", "parked-audit"]
+        );
+    }
+
+    #[test]
+    fn compiled_policy_retains_metadata_and_converts_rules() {
+        let rule = Rule {
+            id: "r1".into(),
+            priority: 7,
+            conditions: vec![Condition {
+                predicate: "new_content_contains".into(),
+                args: vec![".unwrap()".into()],
+                script: None,
+            }],
+            actions: vec![Action {
+                action_type: "constraint_violation".into(),
+                params: vec!["no unwrap".into()],
+                data: None,
+            }],
+        };
+        let mut disk = rule_to_disk(&rule, "pre");
+        disk.silent = Some(true);
+        disk.audit = Some(true);
+        disk.doc_excepted = Some(true);
+        let policy = CompiledPolicy::compile(vec![disk]).unwrap();
+        assert_eq!(policy.rules().len(), 1);
+        let kept = &policy.rules()[0];
+        assert_eq!(kept.phase, "pre");
+        assert_eq!(kept.silent, Some(true));
+        assert_eq!(kept.audit, Some(true));
+        assert_eq!(kept.doc_excepted, Some(true));
+        assert_eq!(kept.priority, 7);
+        let (engine_rule, phase) = rule_from_disk(kept);
+        assert_eq!(engine_rule.id, "r1");
+        assert_eq!(engine_rule.priority, 7);
+        assert_eq!(phase, "pre");
+        let selected = policy.select(Selection::Hook(Phase::Pre));
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].conditions[0].predicate, "new_content_contains");
+    }
+
+    #[test]
+    fn rule_to_disk_from_disk_round_trip() {
+        let r = Rule {
+            id: "t".into(),
+            priority: 5,
+            conditions: vec![Condition {
+                predicate: "p".into(),
+                args: vec!["x".into()],
+                script: Some("a > 1".into()),
+            }],
+            actions: vec![Action {
+                action_type: "log".into(),
+                params: vec!["y".into()],
+                data: None,
+            }],
+        };
+        let d = rule_to_disk(&r, "post");
+        assert_eq!(d.phase, "post");
+        let (r2, phase) = rule_from_disk(&d);
+        assert_eq!(r2.id, "t");
+        assert_eq!(r2.priority, 5);
+        assert_eq!(r2.conditions[0].script.as_deref(), Some("a > 1"));
+        assert_eq!(phase, "post");
+    }
+
+    #[test]
+    fn compile_rejects_programmatic_invalid_rules() {
+        let base = DiskRule {
+            id: "r1".into(),
+            phase: "pre".into(),
+            priority: 1,
+            conditions: vec![DiskCondition {
+                predicate: "p".into(),
+                args: vec![],
+                script: None,
+            }],
+            actions: vec![DiskAction {
+                action_type: "log".into(),
+                params: vec![],
+                ..Default::default()
+            }],
+            silent: None,
+            audit: None,
+            doc_excepted: None,
+        };
+        let invalid = |rule: DiskRule| {
+            CompiledPolicy::compile(vec![rule])
+                .map_err(|e| (err_kind(&e).to_string(), err_message(&e).to_string()))
+        };
+        let mut r = base.clone();
+        r.phase = "Pre".into();
+        assert_eq!(
+            invalid(r).unwrap_err(),
+            (
+                "invalid".into(),
+                "field `phase` has invalid value `Pre`; allowed: pre, post, audit, none".into()
+            )
+        );
+        let mut r = base.clone();
+        r.conditions.clear();
+        assert_eq!(
+            invalid(r).unwrap_err(),
+            (
+                "invalid".into(),
+                "rule `r1`: field `conditions` is empty; a rule needs at least one condition"
+                    .into()
+            )
+        );
+        let mut r = base.clone();
+        r.actions.push(DiskAction {
+            action_type: "warn".into(),
+            params: vec!["m".into()],
+            ..Default::default()
+        });
+        assert_eq!(
+            invalid(r).unwrap_err(),
+            (
+                "invalid".into(),
+                "rule `r1`: field `actions` must hold exactly one action, got 2".into()
+            )
+        );
+        let mut r = base.clone();
+        r.actions[0].action_type = "explode".into();
+        assert_eq!(
+            invalid(r).unwrap_err().1,
+            "rule `r1`: field `action_type` has unknown value `explode`; allowed: constraint_violation, constraint_warning, log, emit_capsule"
+        );
+        let mut r = base.clone();
+        r.actions[0].action_type = "emit_capsule".into();
+        r.actions[0].data = None;
+        assert_eq!(invalid(r).unwrap_err().1, "emit_capsule must be an object");
+        let mut r = base;
+        r.actions[0].action_type = "emit_capsule".into();
+        r.actions[0].data = Some(serde_json::json!({"id":"?x","body":"b","lifecycle":"session"}));
+        let (_, msg) = invalid(r).unwrap_err();
+        assert!(msg.contains("Invalid capsule:"), "{msg}");
+    }
+
+    #[test]
+    fn compile_dedupes_identical_and_errors_on_differing() {
+        let base = DiskRule {
+            id: "r1".into(),
+            phase: "pre".into(),
+            priority: 1,
+            conditions: vec![DiskCondition {
+                predicate: "p".into(),
+                args: vec![],
+                script: None,
+            }],
+            actions: vec![DiskAction {
+                action_type: "log".into(),
+                params: vec!["m".into()],
+                ..Default::default()
+            }],
+            silent: None,
+            audit: None,
+            doc_excepted: None,
+        };
+        let ok = CompiledPolicy::compile(vec![base.clone(), base.clone()]).unwrap();
+        assert_eq!(ok.rules().len(), 1);
+        assert_eq!(ok.diagnostics().len(), 1);
+        assert_eq!(ok.diagnostics()[0].rule_id(), "r1");
+        let mut diff = base.clone();
+        diff.actions[0].params = vec!["other".into()];
+        let err = CompiledPolicy::compile(vec![base, diff]).unwrap_err();
+        assert!(
+            err_message(&err).contains("duplicate rule id `r1` with differing definitions"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn compile_rejects_duplicate_expanded_base_ids_only_for_full_ids() {
+        // OR-expanded ids share a base but differ in full id: both kept.
+        let policy = CompiledPolicy::compile(vec![
+            DiskRule {
+                id: "r#or0".into(),
+                phase: "pre".into(),
+                priority: 1,
+                conditions: vec![DiskCondition {
+                    predicate: "a".into(),
+                    args: vec![],
+                    script: None,
+                }],
+                actions: vec![DiskAction {
+                    action_type: "log".into(),
+                    ..Default::default()
+                }],
+                silent: None,
+                audit: None,
+                doc_excepted: None,
+            },
+            DiskRule {
+                id: "r#or1".into(),
+                phase: "pre".into(),
+                priority: 1,
+                conditions: vec![DiskCondition {
+                    predicate: "b".into(),
+                    args: vec![],
+                    script: None,
+                }],
+                actions: vec![DiskAction {
+                    action_type: "log".into(),
+                    ..Default::default()
+                }],
+                silent: None,
+                audit: None,
+                doc_excepted: None,
+            },
+        ])
+        .unwrap();
+        assert_eq!(policy.rules().len(), 2);
+        assert_eq!(base_rule_id(&policy.rules()[0].id), "r");
+    }
+
+    #[test]
+    fn parse_doc_to_flat_rules_with_suffixes() {
+        let parsed = doc(
+            r#"{ "rules": [
+            { "id": "r1", "phase": "pre", "priority": 10,
+              "when": [ { "or": [ { "new_content_contains": "a" }, { "new_content_contains": "b" } ] } ],
+              "then": { "block": "no" } }
+        ] }"#,
+            "doc",
+        );
+        assert_eq!(parsed.file.rules.len(), 2);
+        assert_eq!(parsed.file.rules[0].id, "r1#or0");
+        assert_eq!(
+            parsed.file.rules[0].actions[0].action_type,
+            "constraint_violation"
+        );
+        assert_eq!(
+            parsed.file.rules[1].conditions[0].predicate,
+            "new_content_contains"
+        );
+    }
+
+    #[test]
+    fn phase_enum_maps_disk_strings() {
+        for (s, p) in [
+            ("pre", Phase::Pre),
+            ("post", Phase::Post),
+            ("audit", Phase::Audit),
+            ("none", Phase::None),
+        ] {
+            assert_eq!(Phase::from_str_lossy(s), Some(p));
+            assert_eq!(p.as_str(), s);
+            assert_eq!(p.to_string(), s);
+        }
+        assert_eq!(Phase::from_str_lossy("Pre"), None);
+        assert_eq!(Phase::from_str_lossy("tag"), None);
+    }
+
+    #[test]
+    fn synthetic_tagger_keeps_tag_verb_and_phase() {
+        let tagger = SourceRule::synthetic_tagger(
+            "missing-test",
+            &[serde_json::json!({"change_set_has_production_rust": true})],
+        )
+        .unwrap();
+        assert_eq!(tagger.id, "tagger:missing-test");
+        assert_eq!(tagger.phase, "tag");
+        assert_eq!(tagger.then.action_type, "tag");
+        assert_eq!(tagger.then.params, vec!["missing-test"]);
+        let expanded = unfold_or(&tagger).unwrap();
+        assert_eq!(expanded.len(), 1);
+        // Tag phase/verb sit outside the strict vocabulary, so compile()
+        // (and therefore hooks/audit) never sees them; that is the
+        // documented boundary.
+        assert_eq!(Phase::from_str_lossy(&expanded[0].phase), None);
+        assert!(CompiledPolicy::compile(expanded).is_err());
+    }
+
+    #[test]
+    fn synthetic_tagger_malformed_when_is_unfold_error() {
+        let err = SourceRule::synthetic_tagger("t", &[serde_json::json!({"p": 5})]).unwrap_err();
+        assert_eq!(err_kind(&err), "unfold");
+        match &err {
+            PolicyError::Unfold { source_id, .. } => assert_eq!(source_id, "tagger:t"),
+            other => panic!("wrong kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn check_helpers_produce_exact_legacy_messages() {
+        assert_eq!(
+            check_action_type("r", "action_type", "zap").unwrap_err().0,
+            "rule `r`: field `action_type` has unknown value `zap`; allowed: constraint_violation, constraint_warning, log, emit_capsule"
+        );
+        assert_eq!(
+            check_conditions_nonempty("r", "conditions", 0)
+                .unwrap_err()
+                .0,
+            "rule `r`: field `conditions` is empty; a rule needs at least one condition"
+        );
+        assert_eq!(
+            check_single_action("r", "actions", 2).unwrap_err().0,
+            "rule `r`: field `actions` must hold exactly one action, got 2"
+        );
+        assert!(check_action_type("r", "action_type", "log").is_ok());
+        assert!(check_action_type("r", "action_type", "constraint_violation").is_ok());
+        // Verbs that are not internal names ("block") are NOT accepted here;
+        // the verb vocabulary is checked via `then` parsing.
+        assert!(check_action_type("r", "action_type", "block").is_err());
+    }
+
+    #[test]
+    fn zero_arg_bool_leaf_serializes_as_true() {
+        let c = WhenClause::Leaf(DiskCondition {
+            predicate: "flag".into(),
+            args: vec![],
+            script: None,
+        });
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v, serde_json::json!({ "flag": true }));
+    }
+
+    #[test]
+    fn parse_accepts_missing_phase_defaults_to_pre() {
+        let parsed = doc(
+            r#"{ "rules": [ { "id": "r1", "when": [ { "p": true } ], "then": { "warn": "m" } } ] }"#,
+            "doc",
+        );
+        assert_eq!(parsed.file.rules[0].phase, "pre");
+        assert_eq!(parsed.file.rules[0].priority, 0);
+    }
+
+    #[test]
+    fn diagnostics_have_no_stderr_and_match_legacy_text() {
+        // Duplicate diagnostic text matches the former eprintln content
+        // after the "phronesis: warning: {source} " prefix.
+        let parsed = parse_source(
+            r#"{ "rules": [
+                { "id": "r1", "when": [ { "p": true } ], "then": { "warn": "m" } },
+                { "id": "r1", "when": [ { "p": true } ], "then": { "warn": "m" } } ] }"#,
+            "rules.json",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.diagnostics[0].message(),
+            "lists rule `r1` more than once with identical content; using one copy — delete the extras"
+        );
     }
 }

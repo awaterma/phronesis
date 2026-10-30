@@ -170,3 +170,194 @@ pub fn validate_emit_capsule_payload(
         expires_after,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_duration_valid_formats() {
+        assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_duration("10m"), Some(Duration::from_secs(600)));
+        assert_eq!(parse_duration("2h"), Some(Duration::from_secs(7200)));
+        assert_eq!(parse_duration("7d"), Some(Duration::from_secs(604800)));
+    }
+
+    #[test]
+    fn parse_duration_invalid_formats() {
+        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration("0d"), None);
+        assert_eq!(parse_duration("7x"), None);
+        assert_eq!(parse_duration("d"), None);
+        assert_eq!(parse_duration("-5m"), None);
+        assert_eq!(
+            parse_duration("18446744073709551615d"),
+            None,
+            "checked_mul overflow"
+        );
+    }
+
+    #[test]
+    fn lifecycle_display_matches_disk_strings() {
+        assert_eq!(
+            CapsuleLifecycle::NextInteraction.to_string(),
+            "next_interaction"
+        );
+        assert_eq!(CapsuleLifecycle::Session.to_string(), "session");
+        assert_eq!(CapsuleLifecycle::Persistent.to_string(), "persistent");
+    }
+
+    #[test]
+    fn validate_accepts_full_spec() {
+        let value = serde_json::json!({
+            "id": "review-layering", "body": "why: ?reason", "lifecycle": "session",
+            "priority": 50, "max_bytes": 512, "expires_after": "7d"
+        });
+        let spec = validate_emit_capsule_payload(&value).unwrap();
+        assert_eq!(spec.id, "review-layering");
+        assert_eq!(spec.body, "why: ?reason");
+        assert_eq!(spec.lifecycle, CapsuleLifecycle::Session);
+        assert_eq!(spec.priority, 50);
+        assert_eq!(spec.max_bytes, 512);
+        assert_eq!(spec.expires_after, Some(Duration::from_secs(604800)));
+    }
+
+    #[test]
+    fn validate_applies_defaults() {
+        let spec = validate_emit_capsule_payload(&serde_json::json!({
+            "id": "c-1", "body": "b", "lifecycle": "next_interaction"
+        }))
+        .unwrap();
+        assert_eq!(spec.priority, 0);
+        assert_eq!(spec.max_bytes, MAX_RECORD_BYTES);
+        assert_eq!(spec.expires_after, None);
+        assert_eq!(spec.lifecycle, CapsuleLifecycle::NextInteraction);
+    }
+
+    #[test]
+    fn validate_rejects_unknown_fields_and_shapes() {
+        for (value, needle) in [
+            (
+                serde_json::json!({"id":"x","body":"x","lifecycle":"session","unknown":true}),
+                "unknown field",
+            ),
+            (
+                serde_json::json!({"id":"x","body":"x"}),
+                "Invalid capsule spec",
+            ),
+            (
+                serde_json::json!({"id":"x","body":5,"lifecycle":"session"}),
+                "Invalid capsule spec",
+            ),
+            (
+                serde_json::json!({"id":"x","body":"x","lifecycle":"forever"}),
+                "Invalid lifecycle: forever",
+            ),
+        ] {
+            let err = validate_emit_capsule_payload(&value).unwrap_err();
+            assert!(err.0.contains(needle), "{value}: {err}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_bad_ids() {
+        for id in [
+            "",
+            "?dynamic",
+            "has space",
+            "slash/",
+            "unicode-é",
+            &"x".repeat(129),
+        ] {
+            let value = serde_json::json!({"id": id, "body": "x", "lifecycle": "session"});
+            let err = validate_emit_capsule_payload(&value).unwrap_err();
+            assert_eq!(
+                err.0, "Capsule ID must not contain variable substitutions",
+                "id {id:?}"
+            );
+        }
+        // 128 chars is exactly the cap.
+        let ok = serde_json::json!({"id": "x".repeat(128), "body": "x", "lifecycle": "session"});
+        assert!(validate_emit_capsule_payload(&ok).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_bad_body_and_max_bytes() {
+        let err = validate_emit_capsule_payload(&serde_json::json!({
+            "id":"x","body":"x","lifecycle":"session","max_bytes":0
+        }))
+        .unwrap_err();
+        assert_eq!(err.0, "max_bytes must be between 1 and 8192");
+        let err = validate_emit_capsule_payload(&serde_json::json!({
+            "id":"x","body":"x","lifecycle":"session","max_bytes":8193
+        }))
+        .unwrap_err();
+        assert_eq!(err.0, "max_bytes must be between 1 and 8192");
+        let err = validate_emit_capsule_payload(&serde_json::json!({
+            "id":"x","body":"y".repeat(8193),"lifecycle":"session"
+        }))
+        .unwrap_err();
+        assert_eq!(
+            err.0, "Capsule body exceeds max_bytes limit of 8192",
+            "default cap applies"
+        );
+        let err = validate_emit_capsule_payload(&serde_json::json!({
+            "id":"x","body":"y".repeat(513),"lifecycle":"session","max_bytes":512
+        }))
+        .unwrap_err();
+        assert_eq!(err.0, "Capsule body exceeds max_bytes limit of 512");
+        assert!(
+            validate_emit_capsule_payload(&serde_json::json!({
+                "id":"x","body":"y".repeat(512),"lifecycle":"session","max_bytes":512
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_bad_expires_after() {
+        for raw in ["0d", "", "5w", "abc"] {
+            let value = serde_json::json!({
+                "id":"x","body":"x","lifecycle":"persistent","expires_after": raw
+            });
+            let err = validate_emit_capsule_payload(&value).unwrap_err();
+            assert!(
+                err.0.contains("invalid expires_after") || err.0 == "invalid expires_after: 0d",
+                "{raw}: {err}"
+            );
+            assert!(err.0.contains(raw), "{raw}: {err}");
+        }
+    }
+
+    #[test]
+    fn error_display_is_the_inner_message_only() {
+        let err = validate_emit_capsule_payload(&serde_json::json!({
+            "id":"?x","body":"x","lifecycle":"session"
+        }))
+        .unwrap_err();
+        // The "Invalid capsule: " prefix is applied by policy.rs / MCP, not here.
+        assert_eq!(
+            err.to_string(),
+            "Capsule ID must not contain variable substitutions"
+        );
+    }
+
+    #[test]
+    fn validate_matches_parse_then_action_wrapping() {
+        // The exact string the strict loader produces for a bad payload.
+        let json = r#"{ "rules": [ { "id": "c", "when": [ { "p": true } ],
+            "then": { "emit_capsule": { "id": "?dynamic", "body": "x", "lifecycle": "session" } } } ] }"#;
+        let err = crate::parse(json, "t").unwrap_err();
+        // Capsule payload failures are serde errors inside the rule
+        // deserializer, so they surface as Malformed — matching the MCP
+        // source where the whole rule validation runs inside from_str.
+        match &err {
+            crate::PolicyError::Malformed { message, .. } => {
+                assert!(message.contains(
+                    "rule `c`: Invalid capsule: Capsule ID must not contain variable substitutions"
+                ), "{message}");
+            }
+            other => panic!("wrong kind: {other}"),
+        }
+    }
+}
