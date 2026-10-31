@@ -112,6 +112,7 @@ not proof that documentation or enforcement is wrong.
 ## The Workspace
 
 - **`phronesis`** ([`crates/phronesis`](crates/phronesis)) — The core library: a high-performance, domain-neutral RETE rules engine (Alpha/Beta networks, P-states, join-sharing) with Consequence/Actor/Provenance primitives.
+- **`phronesis-governance`** ([embedding guide](crates/phronesis-governance/README.md)) — Policy compilation, ordered composition, isolated fact-snapshot evaluation, and structured decisions. Embedders supply facts and evaluators; repository discovery, storage, and transport stay in adapters.
 - **`phronesis-mcp`** ([`crates/phronesis-mcp`](crates/phronesis-mcp)) — An MCP server that hosts the engine behind Claude Code, Codex, and Gemini CLI hooks. Builds the `phr-mcp` binary.
 - **`phronesis-rhai`** ([`crates/phronesis-rhai`](crates/phronesis-rhai)) — A sandboxed [Rhai](https://rhai.rs) evaluator for `__script__` guard conditions and extensible predicate providers. The MCP binary enables it by default.
 

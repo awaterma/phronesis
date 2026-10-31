@@ -1,6 +1,6 @@
 //! Embeddable governance core for the phronesis RETE engine.
 //!
-//! Experimental partial extraction from `phronesis-mcp` as pure pieces: the
+//! Shared policy machinery extracted from `phronesis-mcp`: the
 //! `.phronesis/rules.json` parser and strict validation, OR expansion, disk
 //! conversions, compiled-policy selection, and `emit_capsule` payload
 //! validation, ordered composition, consequence classification, and isolated

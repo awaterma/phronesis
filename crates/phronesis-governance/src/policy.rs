@@ -302,7 +302,7 @@ impl SourceRule {
             .iter()
             .map(|v| serde_json::from_value::<WhenClause>(v.clone()))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| PolicyError::SyntheticTagger {
+            .map_err(|e| PolicyError::Unfold {
                 source_id: id.clone(),
                 message: e.to_string(),
             })?;
@@ -665,16 +665,12 @@ pub enum PolicyError {
     /// The document parses but violates the strict load contract.
     #[error("rules source `{source_id}` is invalid: {message}")]
     Invalid { source_id: String, message: String },
-    /// A rule's `when` could not be expanded to flat disk rules.
+    /// A rule's `when` could not be expanded to flat disk rules. Also the
+    /// construction error of [`SourceRule::synthetic_tagger`]; the MCP crate
+    /// maps it onto its legacy path-bearing `RulesFileError::Unfold`, whose
+    /// display wording stays that crate's concern.
     #[error("rules source `{source_id}` could not be expanded: {message}")]
     Unfold { source_id: String, message: String },
-    /// [`SourceRule::synthetic_tagger`] construction failure. Same payload
-    /// shape as [`PolicyError::Unfold`], but the display keeps the legacy
-    /// MCP wording ("rules file at …") because the MCP journey tagger
-    /// stringifies this error verbatim into its own config-error type and
-    /// that consumer's wording is outside this crate's control.
-    #[error("rules file at {source_id} could not be expanded: {message}")]
-    SyntheticTagger { source_id: String, message: String },
 }
 
 /// Structured replacement for the warnings the former loader printed to
@@ -1168,26 +1164,83 @@ impl CompiledPolicy {
         })
     }
 
-    /// Validate and compile source rules: unfold every OR clause with
-    /// [`unfold_or_with_diagnostics`], record the private source sidecar
-    /// (original source id, source-only `binds` flag, expansion position)
-    /// for each flat rule, then run exactly the validation
-    /// [`CompiledPolicy::compile`] runs — identical duplicate ids dedupe
-    /// with a [`PolicyDiagnostic::DuplicateIdenticalRule`] and the sidecar
-    /// entry of the first copy wins, same-id differing definitions are a
-    /// [`PolicyError::Invalid`]. Unfold errors carry the offending
-    /// source rule's id as `source_id`; unfold diagnostics (large OR
-    /// expansions) surface in [`CompiledPolicy::diagnostics`].
+    /// Validate and compile source rules. Duplicate SOURCE definitions are
+    /// compared before flattening — including the source-only `binds` flag,
+    /// which flat rules cannot carry: identical definitions dedupe with a
+    /// [`PolicyDiagnostic::DuplicateIdenticalRule`] (first copy wins, so
+    /// the sidecar keeps its origin), differing ones are a
+    /// [`PolicyError::Invalid`]. Then every OR clause is unfolded with
+    /// [`unfold_or_with_diagnostics`]; when two distinct source rules
+    /// produce the same flat rule id (an OR-expanded child colliding with
+    /// a literal rule of that id), the policy is rejected instead of
+    /// silently losing one source's origin — even when the flat shapes
+    /// are identical. Finally the exact validation
+    /// [`CompiledPolicy::compile`] runs. Unfold errors carry the
+    /// offending source rule's id as `source_id`; unfold diagnostics
+    /// (large OR expansions) surface in [`CompiledPolicy::diagnostics`].
     pub fn compile_source(sources: &[SourceRule]) -> Result<Self, PolicyError> {
+        let invalid = |message: String| PolicyError::Invalid {
+            source_id: "compiled".to_string(),
+            message,
+        };
+        // Compare whole definitions (every field, `binds` included) via the
+        // canonical serialization, so two same-id sources that differ only
+        // in `binds` cannot slip through a flat-rule dedupe that would
+        // silently keep the first copy's origin.
+        let mut first: HashMap<&str, (serde_json::Value, &SourceRule)> = HashMap::new();
+        let mut kept: Vec<&SourceRule> = Vec::with_capacity(sources.len());
+        let mut source_diagnostics = Vec::new();
+        let mut warned = std::collections::HashSet::new();
+        for source in sources {
+            let definition = serde_json::to_value(source)
+                .map_err(|e| invalid(format!("rule `{}` is not serializable: {e}", source.id)))?;
+            match first.get(source.id.as_str()) {
+                None => {
+                    first.insert(source.id.as_str(), (definition, source));
+                    kept.push(source);
+                }
+                Some((previous, _)) if *previous == definition => {
+                    if warned.insert(source.id.as_str()) {
+                        source_diagnostics.push(PolicyDiagnostic::DuplicateIdenticalRule {
+                            rule_id: source.id.clone(),
+                            message: format!(
+                                "lists rule `{}` more than once with identical content; using one copy — delete the extras",
+                                source.id
+                            ),
+                        });
+                    }
+                }
+                Some(_) => {
+                    return Err(invalid(format!(
+                        "duplicate rule id `{}` with differing definitions; keep the one you want and delete the others (each rule id must appear once per file)",
+                        source.id
+                    )));
+                }
+            }
+        }
         let mut flat = Vec::new();
         let mut sidecar: HashMap<String, SourceOrigin> = HashMap::new();
         let mut unfold_diagnostics = Vec::new();
-        for source in sources {
-            let (expanded, source_diagnostics) = unfold_or_with_diagnostics(source)?;
-            unfold_diagnostics.extend(source_diagnostics);
+        // Flat rule id → the source rule that produced it. A second,
+        // distinct source reaching the same flat id would make the sidecar
+        // origin order-dependent, so the collision is rejected outright.
+        let mut producer: HashMap<String, String> = HashMap::new();
+        for source in &kept {
+            let (expanded, diagnostics) = unfold_or_with_diagnostics(source)?;
+            unfold_diagnostics.extend(diagnostics);
             for rule in expanded {
-                // Validation keeps the first copy of a duplicate id; the
-                // sidecar must keep the first copy's origin too.
+                if let Some(previous) = producer.get(&rule.id) {
+                    if previous != &source.id {
+                        return Err(invalid(format!(
+                            "rule id `{}` is produced by both rule `{previous}` and rule `{}`; rename one so every rule id stays unambiguous",
+                            rule.id, source.id
+                        )));
+                    }
+                }
+                producer.insert(rule.id.clone(), source.id.clone());
+                // A source unfolding to the same flat id twice is not
+                // possible (expansion suffixes are distinct), so the first
+                // insert is the only one that matters.
                 sidecar.entry(rule.id.clone()).or_insert(SourceOrigin {
                     source_rule_id: source.id.clone(),
                     binds: source.binds,
@@ -1197,8 +1250,8 @@ impl CompiledPolicy {
             }
         }
         let (keep, mut diagnostics) = Self::validate_rules(flat, "compiled")?;
-        // Dropped identical duplicates share their id with the kept copy,
-        // so keeping the kept ids' entries keeps the first copy's origin.
+        // Source-level dedupe and collision rejection above mean every kept
+        // flat id maps to exactly one source, so the sidecar is complete.
         let source_origins = keep
             .iter()
             .filter_map(|rule| {
@@ -1207,6 +1260,7 @@ impl CompiledPolicy {
                     .map(|origin| (rule.id.clone(), origin.clone()))
             })
             .collect();
+        diagnostics.extend(source_diagnostics);
         diagnostics.extend(unfold_diagnostics);
         Ok(CompiledPolicy {
             rules: keep,
@@ -1242,6 +1296,17 @@ impl CompiledPolicy {
                 check_action_type(&rule.id, "action_type", &action.action_type)
                     .map_err(|e| invalid(e.to_string()))?;
                 if action.action_type == "emit_capsule" {
+                    // The parser normalizes object-valued verbs to empty
+                    // params (the message lives in the object), so params
+                    // here can only come from programmatic construction;
+                    // a stray string there would otherwise be lost when the
+                    // payload is re-rendered from `data`.
+                    if !action.params.is_empty() {
+                        return Err(invalid(format!(
+                            "rule `{}`: field `actions[0].params` must be empty for `emit_capsule`; the payload belongs in the object value",
+                            rule.id
+                        )));
+                    }
                     match &action.data {
                         Some(data) if data.is_object() => {
                             crate::capsule::validate_emit_capsule_payload(data)
@@ -1370,8 +1435,7 @@ mod tests {
         match err {
             PolicyError::Malformed { message, .. }
             | PolicyError::Invalid { message, .. }
-            | PolicyError::Unfold { message, .. }
-            | PolicyError::SyntheticTagger { message, .. } => message,
+            | PolicyError::Unfold { message, .. } => message,
         }
     }
 
@@ -1380,7 +1444,6 @@ mod tests {
             PolicyError::Malformed { .. } => "malformed",
             PolicyError::Invalid { .. } => "invalid",
             PolicyError::Unfold { .. } => "unfold",
-            PolicyError::SyntheticTagger { .. } => "synthetic_tagger",
         }
     }
 
@@ -2196,6 +2259,55 @@ mod tests {
     }
 
     #[test]
+    fn compile_rejects_emit_capsule_with_params() {
+        let rule = DiskRule {
+            id: "r1".into(),
+            phase: "pre".into(),
+            priority: 1,
+            conditions: vec![DiskCondition {
+                predicate: "p".into(),
+                args: vec![],
+                script: None,
+            }],
+            actions: vec![DiskAction {
+                action_type: "emit_capsule".into(),
+                params: vec!["legacy message".into()],
+                data: Some(serde_json::json!({"id":"c","body":"b","lifecycle":"session"})),
+            }],
+            silent: None,
+            audit: None,
+            doc_excepted: None,
+        };
+        let err = CompiledPolicy::compile(vec![rule.clone()]).unwrap_err();
+        assert_eq!(
+            err_message(&err),
+            "rule `r1`: field `actions[0].params` must be empty for `emit_capsule`; the payload belongs in the object value"
+        );
+        // The source route unfolds to the same flat action and must hit the
+        // same validation.
+        let source = SourceRule {
+            id: "r1".into(),
+            phase: "pre".into(),
+            priority: 1,
+            when: vec![WhenClause::Leaf(DiskCondition {
+                predicate: "p".into(),
+                args: vec![],
+                script: None,
+            })],
+            then: rule.actions[0].clone(),
+            silent: None,
+            audit: None,
+            doc_excepted: None,
+            binds: None,
+        };
+        let err = CompiledPolicy::compile_source(&[source]).unwrap_err();
+        assert_eq!(
+            err_message(&err),
+            "rule `r1`: field `actions[0].params` must be empty for `emit_capsule`; the payload belongs in the object value"
+        );
+    }
+
+    #[test]
     fn compile_dedupes_identical_and_errors_on_differing() {
         let base = DiskRule {
             id: "r1".into(),
@@ -2333,14 +2445,14 @@ mod tests {
     #[test]
     fn synthetic_tagger_malformed_when_is_unfold_error() {
         let err = SourceRule::synthetic_tagger("t", &[serde_json::json!({"p": 5})]).unwrap_err();
-        assert_eq!(err_kind(&err), "synthetic_tagger");
+        assert_eq!(err_kind(&err), "unfold");
         assert_eq!(
             err.to_string(),
-            "rules file at tagger:t could not be expanded: predicate value must be string, array, or bool; got 5"
+            "rules source `tagger:t` could not be expanded: predicate value must be string, array, or bool; got 5"
         );
         assert!(matches!(
             &err,
-            PolicyError::SyntheticTagger { source_id, .. } if source_id == "tagger:t"
+            PolicyError::Unfold { source_id, .. } if source_id == "tagger:t"
         ));
     }
 

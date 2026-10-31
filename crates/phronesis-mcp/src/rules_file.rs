@@ -20,10 +20,11 @@ use thiserror::Error;
 
 pub use phronesis_governance::policy::{
     base_rule_id, rule_from_disk, rule_to_disk, ACTION_VERBS, DiskAction, DiskCondition, DiskRule,
-    RULE_PHASES, RulesFile, SourceRule, WhenClause,
+    RULE_PHASES, RulesFile, WhenClause,
 };
 use phronesis_governance::policy::{
     parse_source, unfold_or_with_diagnostics, PolicyDiagnostic, PolicyError,
+    SourceRule as GovSourceRule,
 };
 
 /// Legacy check-helper wrappers: same `Result<(), String>` signatures and
@@ -52,10 +53,11 @@ pub fn check_single_action(rule_id: &str, field: &str, len: usize) -> Result<(),
 /// legacy `anyhow` error (carrying the bare message) and re-renders the
 /// OR-expansion notice on stderr exactly as before.
 pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
-    let (rules, diagnostics) = unfold_or_with_diagnostics(source).map_err(|e| match &e {
-        PolicyError::Unfold { message, .. } => anyhow!(message.clone()),
-        other => anyhow!(other.to_string()),
-    })?;
+    let (rules, diagnostics) =
+        unfold_or_with_diagnostics(&GovSourceRule::from(source.clone())).map_err(|e| match &e {
+            PolicyError::Unfold { message, .. } => anyhow!(message.clone()),
+            other => anyhow!(other.to_string()),
+        })?;
     render_legacy_warnings(&diagnostics, Path::new(""));
     Ok(rules)
 }
@@ -116,6 +118,109 @@ impl RulesFileError {
     }
 }
 
+/// Thin compatibility wrapper over the governance
+/// [`phronesis_governance::policy::SourceRule`]: identical public fields and
+/// identical serde behavior (parsing, validation, and serialization are
+/// delegated — nothing is duplicated here), so this crate keeps its
+/// historical public surface. The one behavioral hold-out is
+/// [`SourceRule::synthetic_tagger`], which still returns
+/// `Result<Self, RulesFileError>` with the legacy wording.
+#[derive(Debug, Clone)]
+pub struct SourceRule {
+    pub id: String,
+    pub phase: String,
+    pub priority: i32,
+    pub when: Vec<WhenClause>,
+    pub then: DiskAction,
+    pub silent: Option<bool>,
+    pub audit: Option<bool>,
+    pub doc_excepted: Option<bool>,
+    /// Disable code-symbol binding for rules that intentionally name foreign
+    /// or removed referents.
+    pub binds: Option<bool>,
+}
+
+impl From<SourceRule> for GovSourceRule {
+    fn from(rule: SourceRule) -> Self {
+        GovSourceRule {
+            id: rule.id,
+            phase: rule.phase,
+            priority: rule.priority,
+            when: rule.when,
+            then: rule.then,
+            silent: rule.silent,
+            audit: rule.audit,
+            doc_excepted: rule.doc_excepted,
+            binds: rule.binds,
+        }
+    }
+}
+
+impl From<GovSourceRule> for SourceRule {
+    fn from(rule: GovSourceRule) -> Self {
+        SourceRule {
+            id: rule.id,
+            phase: rule.phase,
+            priority: rule.priority,
+            when: rule.when,
+            then: rule.then,
+            silent: rule.silent,
+            audit: rule.audit,
+            doc_excepted: rule.doc_excepted,
+            binds: rule.binds,
+        }
+    }
+}
+
+impl Serialize for SourceRule {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        GovSourceRule::from(self.clone()).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceRule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        GovSourceRule::deserialize(deserializer).map(Self::from)
+    }
+}
+
+impl SourceRule {
+    /// Build a `SourceRule` whose `then` action is the sentinel `tag` verb
+    /// and whose message is the tag itself. The journey tagger uses this
+    /// constructor to ride the existing rule-firing path without any new
+    /// matching code: every tagger compiles into one or more flat `DiskRule`s
+    /// via `unfold_or`, loads into a throwaway `ReteNetwork`, and emits a
+    /// `tag`-action consequence whose `message` is the tag name when its
+    /// `when` matches.
+    ///
+    /// Errors bubble back as `RulesFileError::Unfold` carrying the serde
+    /// parse error — keeps the journey config malformed-paths surface a
+    /// single, named error variant. Construction is delegated to the
+    /// governance core; only the error mapping stays here.
+    pub fn synthetic_tagger(tag: &str, when: &[serde_json::Value]) -> Result<Self, RulesFileError> {
+        GovSourceRule::synthetic_tagger(tag, when)
+            .map(Self::from)
+            .map_err(|error| match error {
+                PolicyError::Unfold { source_id, message } => RulesFileError::Unfold {
+                    path: source_id,
+                    message,
+                },
+                // synthetic_tagger cannot produce any other variant; if one
+                // ever does, fail closed onto the same legacy variant.
+                other => RulesFileError::Unfold {
+                    path: String::new(),
+                    message: other.to_string(),
+                },
+            })
+    }
+}
+
 /// Default state of the rules file under the project root.
 pub fn default_path(project_root: &Path) -> PathBuf {
     project_root.join(".phronesis").join("rules.json")
@@ -132,8 +237,8 @@ pub fn read(path: &Path) -> Result<RulesFile, RulesFileError> {
     let sources = read_source(path)?;
     let mut flat = Vec::new();
     for sr in &sources {
-        let (expanded, diagnostics) =
-            unfold_or_with_diagnostics(sr).map_err(|error| RulesFileError::Unfold {
+        let (expanded, diagnostics) = unfold_or_with_diagnostics(&GovSourceRule::from(sr.clone()))
+            .map_err(|error| RulesFileError::Unfold {
                 path: path.display().to_string(),
                 message: match &error {
                     PolicyError::Unfold { message, .. } => message.clone(),
@@ -185,15 +290,13 @@ pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
                 message,
             },
             // parse_source never unfolds, so these cannot occur; fail closed.
-            PolicyError::Unfold { message, .. } | PolicyError::SyntheticTagger { message, .. } => {
-                RulesFileError::Invalid {
-                    path: path.display().to_string(),
-                    message,
-                }
-            }
+            PolicyError::Unfold { message, .. } => RulesFileError::Invalid {
+                path: path.display().to_string(),
+                message,
+            },
         })?;
     render_legacy_warnings(&parsed.diagnostics, path);
-    Ok(parsed.rules)
+    Ok(parsed.rules.into_iter().map(SourceRule::from).collect())
 }
 
 pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError> {
@@ -1065,5 +1168,32 @@ mod tests {
             loaded.rules[0].conditions[0].script,
             Some("rank > 5".to_string())
         );
+    }
+/// The public constructor must keep its exact legacy return type: a
+    /// caller assigning to `Result<SourceRule, RulesFileError>` (as the
+    /// journey tagger config surface documents) must compile unchanged.
+    /// The `ok` assignment below is the compile-time assertion.
+    #[test]
+    fn synthetic_tagger_keeps_legacy_error_type_and_display() {
+        let ok: Result<SourceRule, RulesFileError> = SourceRule::synthetic_tagger(
+            "missing-test",
+            &[serde_json::json!({"change_set_has_production_rust": true})],
+        );
+        let tagger = ok.expect("valid tagger");
+        assert_eq!(tagger.id, "tagger:missing-test");
+        assert_eq!(tagger.phase, "tag");
+        assert_eq!(tagger.then.action_type, "tag");
+        assert_eq!(tagger.then.params, vec!["missing-test"]);
+
+        let err = SourceRule::synthetic_tagger("t", &[serde_json::json!({"p": 5})])
+            .expect_err("malformed when must be rejected");
+        // The legacy Display wording ("rules file at …") is what consumers
+        // stringify verbatim into their own config-error types.
+        assert_eq!(
+            err.to_string(),
+            "rules file at tagger:t could not be expanded: predicate value must be string, array, or bool; got 5"
+        );
+        assert!(matches!(&err, RulesFileError::Unfold { path, .. } if path == "tagger:t"));
+        assert_eq!(err.path(), Some("tagger:t"));
     }
 }

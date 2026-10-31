@@ -185,20 +185,15 @@ pub fn resolve_with_registry(
     resolve_with_pack_layers(project_root, pack_layers)
 }
 
-fn from_gov_origin(origin: GovRuleOrigin) -> RuleOrigin {
-    RuleOrigin {
-        layer: origin.layer,
-        path: PathBuf::from(origin.source_id),
-        decision: origin.decision,
-    }
-}
-
 /// Compose validated pack layers first, then project layers. No registry call
 /// occurs below this point, so pack loading cannot recurse into rule loading.
 /// The ordered later-wins merge itself is
-/// [`phronesis_governance::composition::compose`]; filesystem paths cross the
-/// boundary as opaque `source_id` strings and map back onto
-/// [`RuleOrigin::path`].
+/// [`phronesis_governance::composition::compose`]. Filesystem paths cross that
+/// boundary only as opaque per-layer source IDs (`layer:N`): the exact
+/// `RuleOrigin` for every loaded layer — arbitrary `OsString` paths included —
+/// is kept in a local map keyed by its opaque ID, and the composed origins and
+/// overrides are rehydrated from that map, so no path is ever round-tripped
+/// through a lossy display string.
 fn resolve_with_pack_layers(
     project_root: &Path,
     pack_layers: Vec<crate::language_packs::integration::PackRuleLayer>,
@@ -226,15 +221,31 @@ fn resolve_with_pack_layers(
         }]
     };
     let mut loaded = Vec::new();
-    for layer in pack_layers {
+    let mut layer_origins: HashMap<String, RuleOrigin> = HashMap::new();
+    let mut next_layer = 0usize;
+    let mut register = |layer: String,
+                        path: PathBuf,
+                        decision: Option<String>,
+                        rules: Vec<DiskRule>| {
+        let source_id = format!("layer:{next_layer}");
+        next_layer += 1;
+        let exact = RuleOrigin {
+            layer: layer.clone(),
+            path,
+            decision: decision.clone(),
+        };
+        layer_origins.insert(source_id.clone(), exact);
         loaded.push(LoadedLayer {
             origin: GovRuleOrigin {
-                layer: layer.name,
-                source_id: layer.path.display().to_string(),
-                decision: None,
+                layer,
+                source_id,
+                decision,
             },
-            rules: layer.rules,
+            rules,
         });
+    };
+    for layer in pack_layers {
+        register(layer.name, layer.path, None, layer.rules);
     }
     for layer in project_layers {
         let path = resolve_path(project_root, &layer.path)?;
@@ -248,28 +259,30 @@ fn resolve_with_pack_layers(
             });
         }
         let file = rules_file::read(&path)?;
-        loaded.push(LoadedLayer {
-            origin: GovRuleOrigin {
-                layer: layer.name,
-                source_id: path.display().to_string(),
-                decision: layer.decision,
-            },
-            rules: file.rules,
-        });
+        register(layer.name, path, layer.decision, file.rules);
     }
     let composed = compose(&loaded);
+    // Composition only ever echoes back origins we handed it, so every
+    // `source_id` resolves to the exact recorded layer origin (real
+    // filesystem path, real decision) rather than a display reconstruction.
+    let mut rehydrate = |origin: GovRuleOrigin| -> RuleOrigin {
+        layer_origins
+            .get(&origin.source_id)
+            .cloned()
+            .expect("every composed origin names a loaded layer")
+    };
     let origins = composed
         .origins
         .into_iter()
-        .map(|(rule_id, origin)| (rule_id, from_gov_origin(origin)))
+        .map(|(rule_id, origin)| (rule_id, rehydrate(origin)))
         .collect();
     let overrides = composed
         .overrides
         .into_iter()
         .map(|o| RuleOverride {
             rule_id: o.rule_id,
-            overridden: from_gov_origin(o.overridden),
-            winner: from_gov_origin(o.winner),
+            overridden: rehydrate(o.overridden),
+            winner: rehydrate(o.winner),
         })
         .collect();
     Ok(ResolvedRules {
@@ -417,4 +430,64 @@ mod tests {
             Err(LayerError::Malformed { .. })
         ));
     }
+/// Unix-only: a project root (or any layer path component) may contain
+/// arbitrary non-UTF-8 `OsString` bytes. Origins and overrides must carry the
+/// exact loaded `PathBuf` — never a `to_string_lossy` reconstruction — for
+/// both winners and shadowed rules, while `override_facts` keeps the legacy
+/// lossy display rendering.
+#[cfg(unix)]
+#[test]
+fn non_utf8_project_root_preserves_exact_origins() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let base = tempfile::tempdir().expect("tempdir");
+    let root = base.path().join(OsStr::from_bytes(b"project-\xff-root"));
+    assert!(root.as_os_str().as_bytes().contains(&0xff));
+    std::fs::create_dir_all(root.join(".phronesis")).expect("mkdir");
+    std::fs::create_dir_all(root.join("personal")).expect("mkdir");
+    write_rules(&root.join(".phronesis/rules.json"), "same", 1);
+    write_rules(&root.join("personal/rules.json"), "same", 9);
+    std::fs::write(
+        root.join(".phronesis/loader.json"),
+        r#"{"version":1,"layers":[{"name":"project","path":".phronesis/rules.json"},{"name":"user","path":"personal/rules.json","decision":"ADR-user-policy"}]}"#,
+    )
+    .expect("config");
+
+    let resolved = resolve(&root).expect("resolve");
+    assert_eq!(resolved.rules.len(), 1);
+    assert_eq!(resolved.rules[0].priority, 9);
+
+    let project_rules = root.join(".phronesis/rules.json");
+    let user_rules = root.join("personal/rules.json");
+    let winner = resolved.origins.get("same").expect("winner origin");
+    assert_eq!(winner.layer, "user");
+    assert_eq!(winner.path, user_rules);
+    assert_eq!(winner.path.as_os_str().as_bytes(), user_rules.as_os_str().as_bytes());
+    assert_eq!(winner.decision.as_deref(), Some("ADR-user-policy"));
+
+    assert_eq!(resolved.overrides.len(), 1);
+    let shadowed = &resolved.overrides[0];
+    assert_eq!(shadowed.rule_id, "same");
+    assert_eq!(shadowed.overridden.layer, "project");
+    assert_eq!(shadowed.overridden.path, project_rules);
+    assert_eq!(
+        shadowed.overridden.path.as_os_str().as_bytes(),
+        project_rules.as_os_str().as_bytes()
+    );
+    assert_eq!(shadowed.winner.path, user_rules);
+    assert_eq!(shadowed.winner.decision.as_deref(), Some("ADR-user-policy"));
+
+    // Provenance facts keep the original display output (lossy for
+    // non-UTF-8 bytes) with the adapter's explicit timestamp.
+    let facts = override_facts(&resolved.overrides);
+    assert_eq!(facts[0].predicate, "rule_overridden");
+    assert_eq!(facts[0].args[0], "same");
+    assert_eq!(facts[0].args[1], "project");
+    assert!(facts[0].args[2].contains('\u{FFFD}'));
+    assert_eq!(facts[0].args[3], "user");
+    assert!(facts[0].args[4].contains('\u{FFFD}'));
+    assert_eq!(facts[0].args[5], "ADR-user-policy");
+    assert!(facts[0].timestamp > 0);
+}
 }

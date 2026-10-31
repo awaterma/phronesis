@@ -41,6 +41,14 @@ fn or_clause(a: &str, b: &str) -> WhenClause {
     ])
 }
 
+fn leaf_contains(arg: &str) -> WhenClause {
+    WhenClause::Leaf(phronesis_governance::policy::DiskCondition {
+        predicate: "new_content_contains".to_string(),
+        args: vec![arg.to_string()],
+        script: None,
+    })
+}
+
 fn flat_rule(id: &str) -> CompiledPolicy {
     CompiledPolicy::compile(vec![phronesis_governance::policy::DiskRule {
         id: id.to_string(),
@@ -105,35 +113,46 @@ fn flat_compile_route_has_no_source_metadata() {
 }
 
 #[test]
-fn identical_duplicate_sources_dedupe_and_keep_first_origin() {
+fn identical_duplicate_sources_dedupe_before_expansion() {
     let a = source("dup", Some(false), or_clause("a", "b"));
-    // Same flat content, different source-only metadata: the flat DiskRules
-    // are identical (binds is not on DiskRule), so the loader dedupes and
-    // the sidecar keeps the FIRST copy's origin.
-    let b = source("dup", Some(true), or_clause("a", "b"));
+    let b = source("dup", Some(false), or_clause("a", "b"));
     let policy = CompiledPolicy::compile_source(&[a, b]).expect("compiles");
+    // The duplicate is removed at the SOURCE level, before unfolding, so
+    // the flat rules appear exactly once and a single diagnostic names the
+    // source rule id.
     assert_eq!(policy.rules().len(), 2);
     assert_eq!(
         policy.diagnostics(),
-        &[
-            PolicyDiagnostic::DuplicateIdenticalRule {
-                rule_id: "dup#or0".to_string(),
-                message: "lists rule `dup#or0` more than once with identical content; using one copy — delete the extras".to_string(),
-            },
-            PolicyDiagnostic::DuplicateIdenticalRule {
-                rule_id: "dup#or1".to_string(),
-                message: "lists rule `dup#or1` more than once with identical content; using one copy — delete the extras".to_string(),
-            }
-        ]
-    );
-    // The first copy's metadata wins, matching the kept rule.
-    assert_eq!(
-        policy.source_origin("dup#or0").map(|o| o.binds),
-        Some(Some(false))
+        &[PolicyDiagnostic::DuplicateIdenticalRule {
+            rule_id: "dup".to_string(),
+            message: "lists rule `dup` more than once with identical content; using one copy — delete the extras".to_string(),
+        }]
     );
     assert_eq!(
-        policy.source_origin("dup#or1").map(|o| o.binds),
-        Some(Some(false))
+        policy.source_origin("dup#or0").map(|o| (o.source_rule_id.as_str(), o.binds)),
+        Some(("dup", Some(false)))
+    );
+    assert_eq!(
+        policy.source_origin("dup#or1").map(|o| (o.source_rule_id.as_str(), o.binds)),
+        Some(("dup", Some(false)))
+    );
+}
+
+#[test]
+fn conflicting_binds_duplicate_sources_are_rejected() {
+    // binds is source-only: both copies unfold to identical flat rules, so
+    // only a source-level comparison (binds included) can see the conflict.
+    let a = source("dup", Some(false), or_clause("a", "b"));
+    let b = source("dup", Some(true), or_clause("a", "b"));
+    let err = CompiledPolicy::compile_source(&[a, b]).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            PolicyError::Invalid { source_id, message }
+                if source_id == "compiled"
+                    && message.contains("duplicate rule id `dup` with differing definitions")
+        ),
+        "{err:?}"
     );
 }
 
@@ -149,7 +168,7 @@ fn differing_duplicate_sources_are_invalid() {
         matches!(
             &err,
             PolicyError::Invalid { source_id, message }
-                if source_id == "compiled" && message.contains("duplicate rule id `dup#or0`")
+                if source_id == "compiled" && message.contains("duplicate rule id `dup`")
         ),
         "{err:?}"
     );
@@ -164,6 +183,40 @@ fn differing_flat_rules_from_two_sources_collide() {
     };
     let err = CompiledPolicy::compile_source(&[a, b]).unwrap_err();
     assert!(matches!(err, PolicyError::Invalid { .. }));
+}
+
+#[test]
+fn or_expanded_id_colliding_with_literal_source_is_rejected() {
+    // Source `x` OR-expands to `x#or0`; a separate literal rule is ALSO
+    // authored as `x#or0` with the same flat shape. The flat rules are
+    // identical, but they come from two different sources, so the sidecar
+    // origin would depend on input order: reject instead.
+    let expanded = source("x", Some(false), or_clause("a", "b"));
+    let literal = source("x#or0", Some(false), leaf_contains("a"));
+    let err = CompiledPolicy::compile_source(&[expanded, literal]).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            PolicyError::Invalid { source_id, message }
+                if source_id == "compiled"
+                    && message.contains("rule id `x#or0` is produced by both rule `x` and rule `x#or0`")
+        ),
+        "{err:?}"
+    );
+    // The collision is symmetric in blame: the literal rule first, expansion
+    // second, must fail the same way.
+    let literal = source("x#or0", Some(false), leaf_contains("a"));
+    let expanded = source("x", Some(false), or_clause("a", "b"));
+    let err = CompiledPolicy::compile_source(&[literal, expanded]).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            PolicyError::Invalid { source_id, message }
+                if source_id == "compiled"
+                    && message.contains("rule id `x#or0` is produced by both rule `x#or0` and rule `x`")
+        ),
+        "{err:?}"
+    );
 }
 
 #[test]
