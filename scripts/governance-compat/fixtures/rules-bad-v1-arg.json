@@ -1,0 +1,1 @@
+{"rules": [{"id": "no-force-push", "phase": "pre", "priority": 10, "conditions": [{"predicate": "new_content_contains", "args": [{"re": "git push --force"}]}], "actions": [{"action_type": "constraint_violation", "params": ["no force push"]}]}]}

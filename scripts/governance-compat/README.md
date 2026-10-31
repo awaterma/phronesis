@@ -1,0 +1,118 @@
+# Governance compatibility differential runner
+
+A stdlib-only Python runner that pins `phr-mcp` observable behavior between
+two binaries (baseline vs candidate). It runs an identical, isolated set of
+explicit fixture inputs against each binary in fresh temp project roots and
+compares every observable: exit codes, stdout, stderr, and on-disk state
+(`rules.json`, `log.jsonl`, `emitted-capsules.json`).
+
+## Usage
+
+```bash
+python3 scripts/governance-compat/diff_runner.py \
+  --baseline-bin /path/to/baseline/phr-mcp \
+  --candidate-bin /path/to/candidate/phr-mcp \
+  --output-dir /tmp/compat-out \
+  [--baseline-src /path/to/baseline/checkout] \
+  [--candidate-src /path/to/candidate/checkout]
+```
+
+Exit codes:
+
+- `0` — every case ran, all compared artifacts match, all per-step
+  expectations held
+- `1` — at least one normalized artifact differs (see `diffs/`)
+- `3` — a required case failed to run or was omitted, or a per-step
+  expectation failed (so two binaries agreeing on the same accidental
+  error cannot pass the run)
+- `2` — operational error (missing binary, subprocess failure)
+
+Each call and MCP step carries positive expectations (exit codes, stderr
+needles, JSONRPC success/error shape, required disk state transitions
+before/after the step), so the runner asserts real governance behavior,
+not just equality between the two sides.
+
+`--baseline-src` / `--candidate-src` record the git `HEAD` revision of each
+checkout into `report.json` alongside the binary SHA-256 hashes and the
+SHA-256 of every fixture file.
+
+## Output layout
+
+```
+output-dir/
+  report.json            # per-case per-artifact match/MISMATCH + hashes
+  report.txt             # human summary (also printed to stdout)
+  baseline/<case>/...    # verbatim raw artifacts (unnormalized)
+  candidate/<case>/...   # verbatim raw artifacts
+  normalized/<side>/<case>/...  # normalized copies used for comparison
+  diffs/<case>/...       # unified diffs of normalized text, mismatches only
+```
+
+## What is compared
+
+23 required cases cover:
+
+- CLI help/version/subcommand dispatch (including unknown subcommand)
+- pre/post hook exits for block (2), warn (1), allow (0)
+- Malformed v1/v2 rules files: mis-cased verb, mis-cased phase-free v1 arg,
+  empty `when`, duplicate id — fail-closed block/warn/deny surfaces
+- Mixed phases (pre/post/audit/none) including `audit --json` findings
+- Silent rules, OR clauses
+- Codex adapter decisions: clean `{}`, warn `additionalContext`, deny
+  `permissionDecision` with zero process exit, lifecycle fail-open
+- Capsule disk output (`emitted-capsules.json` + `context list --json`)
+- Layered loader overrides over absolute temp paths, missing required layer,
+  unsupported version, optional-missing layer, action-log recording
+- Rhai provider emitting reserved host-owned predicates (`signal_pass`) —
+  fail closed with the provider named
+- MCP persistent single-connection sessions: initialize, tools/list,
+  add_rule (v1 accepted, v2 disk shape refused), assert_fact/fire_rules,
+  remove_rule, list_rules
+- Broken rules file at startup: `add_rule` refusal error, recovery after
+  the file is repaired, `list_rules` load-error report
+- `load_rules_file` external-edit flow
+- Autopersist write, autoload across a server restart (fresh `serve`),
+  `PHRONESIS_NO_AUTOPERSIST` with dry-run and explicit `save_rules`
+- MCP capsule emission, persistence to disk, idempotent retraction
+
+## Normalization (deliberately minimal)
+
+Normalization is deliberately narrow — only identified generated
+nondeterminism in *named* fields:
+
+- the per-run fixture project root → `<ROOT>`
+- quoted (or JSON-escaped-quoted) named numeric fields: `ts`, `ts_ms`,
+  `generated_at`, `scan_duration_ms`, `created_at_ms`, `updated_at_ms`,
+  `expires_at`, `emitted_at` → value `<TS>`
+- the generated `session_id` value shaped `s-YYYY-MM-DD-<hex>` → `<SESSION>`
+
+There are no generic ISO/UUID regexes: literal user-facing messages,
+decision/rule ids, scope, error wording, and ordering are compared
+verbatim. JSON responses are dumped with `sort_keys` so key order is
+stable; MCP tool responses are matched with needles against both the
+JSONRPC envelope and the unescaped inner tool text.
+
+## Determinism self-check
+
+Running the runner twice with the same binary as baseline and candidate
+must exit 0. Example:
+
+```bash
+python3 scripts/governance-compat/diff_runner.py \
+  --baseline-bin "$BIN" --candidate-bin "$BIN" \
+  --baseline-src "$SRC" --candidate-src "$SRC" \
+  --output-dir /tmp/compat-self
+```
+
+A self-run that reports mismatches means the runner is over-sensitive, not
+that the binaries disagree.
+
+## Adding cases
+
+Cases are plain dicts in `CASES` inside `diff_runner.py`; fixtures live in
+`fixtures/` (rules files, hook payloads, provider scripts, loader layers).
+A case is either a list of one-shot hook/CLI `calls` or a persistent `mcp`
+step list (`{"tool": ..., "args": ...}`, `{"method": ..., "params": ...}`,
+`{"write_disk": ...}` for external file edits between calls). Any new case
+must be added to `REQUIRED_CASES` — the runner fails with exit 3 when a
+required case is missing.

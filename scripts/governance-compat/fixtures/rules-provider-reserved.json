@@ -1,0 +1,1 @@
+{"rules": [{"id": "low-confidence-blocks", "phase": "pre", "priority": 30, "when": [{"__script__": "facts_count('signal_pass', ['*','*']) <= 1"}], "then": {"block": "low confidence"}}]}

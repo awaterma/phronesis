@@ -1,0 +1,1 @@
+{"rules": [{"id": "no-force-push", "phase": "pre", "priority": 10, "when": [], "then": {"block": "no force push"}}]}

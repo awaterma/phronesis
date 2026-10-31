@@ -1,0 +1,1 @@
+{"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": "compat-session", "turn_id": "compat-turn", "tool_use_id": "compat-uid", "tool_input": {"command": "git push --force origin main"}}

@@ -1,0 +1,1 @@
+{"rules": [{"id": "force-push-seen", "phase": "post", "priority": 10, "when": [{"bash_command_matches": "git push --force"}], "then": {"warn": "force push seen"}}]}
