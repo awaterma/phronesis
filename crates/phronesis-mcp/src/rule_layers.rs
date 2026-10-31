@@ -527,13 +527,22 @@ mod tests {
 
     #[test]
     fn relative_project_root_loads_default_layer_once() {
-        let dir_name = "../../target/rule-layers-relative-root-check";
-        let root = PathBuf::from(dir_name);
-        let _ = std::fs::remove_dir_all(&root);
+        let temp_root = tempfile::Builder::new()
+            .prefix("rule-layers-relative-root-check-")
+            .tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("tempdir in cwd");
+        let dir_name = temp_root
+            .path()
+            .file_name()
+            .expect("file name")
+            .to_str()
+            .expect("utf8 name")
+            .to_owned();
+        let root = PathBuf::from(&dir_name);
         std::fs::create_dir_all(root.join(".phronesis")).expect("mkdir");
         write_rules(&root.join(".phronesis/rules.json"), "local", 3);
 
-        let resolved = resolve_with_pack_layers(Path::new(dir_name), Vec::new()).expect("resolve");
+        let resolved = resolve_with_pack_layers(Path::new(&dir_name), Vec::new()).expect("resolve");
         assert!(!resolved.configured);
         assert_eq!(resolved.rules.len(), 1);
         assert_eq!(resolved.rules[0].id, "local");
@@ -541,8 +550,6 @@ mod tests {
         let origin = resolved.origins.get("local").expect("origin");
         assert_eq!(origin.layer, "project");
         assert_eq!(origin.path, root.join(".phronesis/rules.json"));
-
-        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The default (no `loader.json`) route must keep the exact non-UTF-8 root
