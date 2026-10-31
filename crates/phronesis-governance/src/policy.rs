@@ -1229,13 +1229,13 @@ impl CompiledPolicy {
             let (expanded, diagnostics) = unfold_or_with_diagnostics(source)?;
             unfold_diagnostics.extend(diagnostics);
             for rule in expanded {
-                if let Some(previous) = producer.get(&rule.id) {
-                    if previous != &source.id {
-                        return Err(invalid(format!(
-                            "rule id `{}` is produced by both rule `{previous}` and rule `{}`; rename one so every rule id stays unambiguous",
-                            rule.id, source.id
-                        )));
-                    }
+                if let Some(previous) = producer.get(&rule.id)
+                    && previous != &source.id
+                {
+                    return Err(invalid(format!(
+                        "rule id `{}` is produced by both rule `{previous}` and rule `{}`; rename one so every rule id stays unambiguous",
+                        rule.id, source.id
+                    )));
                 }
                 producer.insert(rule.id.clone(), source.id.clone());
                 // A source unfolding to the same flat id twice is not

@@ -74,9 +74,8 @@ fn flat_rule(id: &str) -> CompiledPolicy {
 #[test]
 fn binds_none_true_false_survive_or_expansion() {
     for binds in [None, Some(true), Some(false)] {
-        let policy =
-            CompiledPolicy::compile_source(&[source("r", binds, or_clause("a", "b"))])
-                .expect("compiles");
+        let policy = CompiledPolicy::compile_source(&[source("r", binds, or_clause("a", "b"))])
+            .expect("compiles");
         assert_eq!(policy.rules().len(), 2, "{binds:?}");
         let first = policy.source_origin("r#or0").expect("sidecar entry");
         assert_eq!(first.source_rule_id, "r");
@@ -96,8 +95,8 @@ fn unexpanded_rule_keeps_source_id_without_expansion() {
         args: vec!["src/".to_string()],
         script: None,
     });
-    let policy = CompiledPolicy::compile_source(&[source("solo", Some(false), leaf)])
-        .expect("compiles");
+    let policy =
+        CompiledPolicy::compile_source(&[source("solo", Some(false), leaf)]).expect("compiles");
     assert_eq!(policy.rules().len(), 1);
     let origin = policy.source_origin("solo").expect("sidecar entry");
     assert_eq!(origin.source_rule_id, "solo");
@@ -129,11 +128,15 @@ fn identical_duplicate_sources_dedupe_before_expansion() {
         }]
     );
     assert_eq!(
-        policy.source_origin("dup#or0").map(|o| (o.source_rule_id.as_str(), o.binds)),
+        policy
+            .source_origin("dup#or0")
+            .map(|o| (o.source_rule_id.as_str(), o.binds)),
         Some(("dup", Some(false)))
     );
     assert_eq!(
-        policy.source_origin("dup#or1").map(|o| (o.source_rule_id.as_str(), o.binds)),
+        policy
+            .source_origin("dup#or1")
+            .map(|o| (o.source_rule_id.as_str(), o.binds)),
         Some(("dup", Some(false)))
     );
 }
@@ -252,12 +255,8 @@ fn large_or_expansion_diagnostic_is_not_lost() {
 
 #[test]
 fn empty_or_is_an_unfold_error_naming_the_source_rule() {
-    let err = CompiledPolicy::compile_source(&[source(
-        "broken",
-        None,
-        WhenClause::Or(vec![]),
-    )])
-    .unwrap_err();
+    let err = CompiledPolicy::compile_source(&[source("broken", None, WhenClause::Or(vec![]))])
+        .unwrap_err();
     assert!(
         matches!(
             &err,

@@ -19,12 +19,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use phronesis_governance::policy::{
-    base_rule_id, rule_from_disk, rule_to_disk, ACTION_VERBS, DiskAction, DiskCondition, DiskRule,
-    RULE_PHASES, RulesFile, WhenClause,
+    ACTION_VERBS, DiskAction, DiskCondition, DiskRule, RULE_PHASES, RulesFile, WhenClause,
+    base_rule_id, rule_from_disk, rule_to_disk,
 };
 use phronesis_governance::policy::{
-    parse_source, unfold_or_with_diagnostics, PolicyDiagnostic, PolicyError,
-    SourceRule as GovSourceRule,
+    PolicyDiagnostic, PolicyError, SourceRule as GovSourceRule, parse_source,
+    unfold_or_with_diagnostics,
 };
 
 /// Legacy check-helper wrappers: same `Result<(), String>` signatures and
@@ -53,8 +53,8 @@ pub fn check_single_action(rule_id: &str, field: &str, len: usize) -> Result<(),
 /// legacy `anyhow` error (carrying the bare message) and re-renders the
 /// OR-expansion notice on stderr exactly as before.
 pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
-    let (rules, diagnostics) =
-        unfold_or_with_diagnostics(&GovSourceRule::from(source.clone())).map_err(|e| match &e {
+    let (rules, diagnostics) = unfold_or_with_diagnostics(&GovSourceRule::from(source.clone()))
+        .map_err(|e| match &e {
             PolicyError::Unfold { message, .. } => anyhow!(message.clone()),
             other => anyhow!(other.to_string()),
         })?;
@@ -221,6 +221,12 @@ impl SourceRule {
     }
 }
 
+/// Project-relative location of the default rules file. `default_path` joins
+/// this onto the project root; the layer resolver names the same relative
+/// string so the root is joined exactly once and no root bytes are
+/// round-tripped through a lossy display string.
+pub const DEFAULT_RULES_RELATIVE_PATH: &str = ".phronesis/rules.json";
+
 /// Default state of the rules file under the project root.
 pub fn default_path(project_root: &Path) -> PathBuf {
     project_root.join(".phronesis").join("rules.json")
@@ -271,8 +277,8 @@ pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
     struct Wrapper {
         rules: Vec<SourceRule>,
     }
-    let parsed = parse_source(&content, &path.display().to_string())
-        .map_err(|error| match error {
+    let parsed =
+        parse_source(&content, &path.display().to_string()).map_err(|error| match error {
             PolicyError::Malformed { message, .. } => {
                 match serde_json::from_str::<Wrapper>(&content) {
                     Err(source) => RulesFileError::Malformed {
@@ -1169,7 +1175,7 @@ mod tests {
             Some("rank > 5".to_string())
         );
     }
-/// The public constructor must keep its exact legacy return type: a
+    /// The public constructor must keep its exact legacy return type: a
     /// caller assigning to `Result<SourceRule, RulesFileError>` (as the
     /// journey tagger config surface documents) must compile unchanged.
     /// The `ok` assignment below is the compile-time assertion.
@@ -1195,5 +1201,54 @@ mod tests {
         );
         assert!(matches!(&err, RulesFileError::Unfold { path, .. } if path == "tagger:t"));
         assert_eq!(err.path(), Some("tagger:t"));
+    }
+
+    /// The wrapper is a pure delegate: for the same JSON it must parse and
+    /// serialize exactly like the governance `SourceRule`, field for field
+    /// (source-only `binds` included), and reject the same input with the
+    /// same message — the MCP crate's public serde surface must not drift
+    /// from the shared core.
+    #[test]
+    fn source_rule_wrapper_serde_matches_governance_exactly() {
+        let json = r#"{
+            "id": "r1", "phase": "post", "priority": 7,
+            "silent": true, "audit": false, "doc_excepted": true, "binds": true,
+            "when": [ { "or": [ { "file_path_matches": "src" },
+                                { "file_extension_is": ".rs" } ] } ],
+            "then": { "warn": "legacy" }
+        }"#;
+        let wrapped: SourceRule = serde_json::from_str(json).unwrap();
+        let gov: GovSourceRule = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            serde_json::to_value(&wrapped).unwrap(),
+            serde_json::to_value(&gov).unwrap()
+        );
+
+        // Every public field crosses the From conversions unchanged,
+        // including the source-only `binds` flag flat rules cannot carry.
+        assert_eq!(wrapped.binds, Some(true));
+        assert_eq!(wrapped.silent, Some(true));
+        assert_eq!(wrapped.audit, Some(false));
+        assert_eq!(wrapped.doc_excepted, Some(true));
+        let back = GovSourceRule::from(wrapped);
+        assert_eq!(back.binds, gov.binds);
+        assert_eq!(back.phase, gov.phase);
+        assert_eq!(back.priority, gov.priority);
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&gov).unwrap()
+        );
+
+        // Unknown keys fail identically on both paths (shared deserializer).
+        let bad =
+            r#"{"id":"r1","phase":"pre","priority":1,"when":[],"then":{"block":"x"},"bogus":1}"#;
+        let wrap_err = serde_json::from_str::<SourceRule>(bad)
+            .unwrap_err()
+            .to_string();
+        let gov_err = serde_json::from_str::<GovSourceRule>(bad)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(wrap_err, gov_err);
+        assert!(wrap_err.contains("unknown key `bogus`"), "{wrap_err}");
     }
 }
