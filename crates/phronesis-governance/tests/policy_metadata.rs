@@ -266,3 +266,61 @@ fn empty_or_is_an_unfold_error_naming_the_source_rule() {
         "{err:?}"
     );
 }
+
+fn scripted_leaf(predicate: &str, args: &[&str]) -> WhenClause {
+    WhenClause::Leaf(phronesis_governance::policy::DiskCondition {
+        predicate: predicate.to_string(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+        script: Some("return true;".to_string()),
+    })
+}
+
+#[test]
+fn scripted_leaves_with_hidden_predicate_args_are_not_identical_duplicates() {
+    // Regression: the serialized projection renders a scripted leaf as
+    // `{"__script__": <script>}` alone, dropping predicate and args, so two
+    // structurally different duplicates serialized identically and the
+    // second copy was silently dropped as "identical".
+    let a = source("dup", None, scripted_leaf("__script__", &[]));
+    let b = source("dup", None, scripted_leaf("file_path_matches", &["src/"]));
+    assert_eq!(
+        serde_json::to_value(&a).unwrap(),
+        serde_json::to_value(&b).unwrap(),
+        "precondition: serialized shapes coincide; the comparison must still see the difference"
+    );
+    let err = CompiledPolicy::compile_source(&[a, b]).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            PolicyError::Invalid { source_id, message }
+                if source_id == "compiled"
+                    && message.contains("duplicate rule id `dup` with differing definitions")
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn trailing_action_params_hidden_by_serialization_are_not_identical_duplicates() {
+    // Regression: the serialized `then` projection renders only the first
+    // action param, so a trailing-param difference vanished in the
+    // serialized comparison and the second copy was silently dropped.
+    let a = source("dup", None, or_clause("a", "b"));
+    let mut b = source("dup", None, or_clause("a", "b"));
+    b.then.params.push("hidden".to_string());
+    assert_eq!(
+        serde_json::to_value(&a).unwrap(),
+        serde_json::to_value(&b).unwrap(),
+        "precondition: serialized shapes coincide; the comparison must still see the difference"
+    );
+    let err = CompiledPolicy::compile_source(&[a, b]).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            PolicyError::Invalid { source_id, message }
+                if source_id == "compiled"
+                    && message.contains("duplicate rule id `dup` with differing definitions")
+        ),
+        "{err:?}"
+    );
+}

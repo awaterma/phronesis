@@ -28,8 +28,11 @@
 //! - Operational failures (rule installation, fact assertion, agenda
 //!   update, firing) are typed errors carrying the engine error as
 //!   `source`. A policy `Deny` is a successful evaluation, not an error.
-//! - An empty selection cannot fire anything: the network is not built,
-//!   facts are not asserted, and the decision is `Allow`.
+//! - An empty selection cannot fire anything: the network is not built
+//!   and facts are not asserted. The snapshot is validated first, so a
+//!   snapshot that violates a reservation or repeats a fact id is an
+//!   error even when the selection is empty — only a VALIDATED empty
+//!   selection classifies as `Allow`.
 //!
 //! No filesystem, environment, discovery, logging, or process side
 //! effects. The caller's provenance labels are not authentication.
@@ -129,8 +132,11 @@ pub enum EvaluationError {
 ///
 /// Order of operations: extension predicates are validated against
 /// `reserved` and fact ids deduplicated **before anything is asserted**;
-/// then selected rules are installed, host facts are asserted, extension
-/// facts are asserted, the agenda is updated, and all matched rules fire.
+/// this snapshot validation runs even when the selection is empty, so
+/// reserved/duplicate rejections keep priority over the empty-selection
+/// `Allow`. Then selected rules are installed, host facts are asserted,
+/// extension facts are asserted, the agenda is updated, and all matched
+/// rules fire.
 /// The raw consequences are classified by [`crate::decision::classify`],
 /// which demotes, projects, and retains them unchanged.
 pub async fn evaluate(

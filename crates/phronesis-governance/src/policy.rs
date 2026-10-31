@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// One clause in a v2 rule's `when` array: a leaf condition or an OR group.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WhenClause {
     Leaf(DiskCondition),
     Or(Vec<WhenClause>),
@@ -100,7 +100,7 @@ impl<'de> Deserialize<'de> for WhenClause {
 }
 
 /// On-disk v2 rule form. OR-bearing; expanded to flat `DiskRule`s by `unfold_or`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SourceRule {
     pub id: String,
     pub phase: String,
@@ -659,7 +659,10 @@ pub struct RulesFile {
 /// [`CompiledPolicy::compile`].
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum PolicyError {
-    /// The document is not valid JSON (or not the expected JSON shape).
+    /// The document is not valid JSON, or fails serde shape/semantic
+    /// validation while parsing — any deserializer error, including the
+    /// semantic checks (unknown verb/phase/key, ill-formed clause) the
+    /// parser performs inline.
     #[error("rules source `{source_id}` is malformed: {message}")]
     Malformed { source_id: String, message: String },
     /// The document parses but violates the strict load contract.
@@ -1183,23 +1186,22 @@ impl CompiledPolicy {
             source_id: "compiled".to_string(),
             message,
         };
-        // Compare whole definitions (every field, `binds` included) via the
-        // canonical serialization, so two same-id sources that differ only
-        // in `binds` cannot slip through a flat-rule dedupe that would
-        // silently keep the first copy's origin.
-        let mut first: HashMap<&str, (serde_json::Value, &SourceRule)> = HashMap::new();
+        // Compare whole definitions structurally (every field, `binds`
+        // included), so two same-id sources that differ only in a field the
+        // canonical serialization drops (a scripted leaf's predicate/args,
+        // trailing action params) cannot slip through a flat-rule dedupe
+        // that would silently keep the first copy's origin.
+        let mut first: HashMap<&str, &SourceRule> = HashMap::new();
         let mut kept: Vec<&SourceRule> = Vec::with_capacity(sources.len());
         let mut source_diagnostics = Vec::new();
         let mut warned = std::collections::HashSet::new();
         for source in sources {
-            let definition = serde_json::to_value(source)
-                .map_err(|e| invalid(format!("rule `{}` is not serializable: {e}", source.id)))?;
             match first.get(source.id.as_str()) {
                 None => {
-                    first.insert(source.id.as_str(), (definition, source));
+                    first.insert(source.id.as_str(), source);
                     kept.push(source);
                 }
-                Some((previous, _)) if *previous == definition => {
+                Some(previous) if *previous == source => {
                     if warned.insert(source.id.as_str()) {
                         source_diagnostics.push(PolicyDiagnostic::DuplicateIdenticalRule {
                             rule_id: source.id.clone(),
