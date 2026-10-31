@@ -4,7 +4,16 @@ A stdlib-only Python runner that pins `phr-mcp` observable behavior between
 two binaries (baseline vs candidate). It runs an identical, isolated set of
 explicit fixture inputs against each binary in fresh temp project roots and
 compares every observable: exit codes, stdout, stderr, and on-disk state
-(`rules.json`, `log.jsonl`, `emitted-capsules.json`).
+(`rules.json`, `log.jsonl`, `emitted-capsules.json`). Exit codes are
+compared for **every** call, even calls that carry no explicit `expect`.
+The disk state of the three `.phronesis/` files is captured for **every**
+case (raw + normalized, absent files recorded as `<absent>`) and compared
+byte-for-byte, and an intermediate disk snapshot is taken at every
+`expect_disk` step so a later removal or recovery cannot hide a difference.
+Regression tests for these comparison guarantees live in
+`test_diff_runner.py` (`python3 -m unittest test_diff_runner`), including
+negative controls proving the normalizer preserves literal UUIDs, dates,
+rule ids, and message wording.
 
 ## Usage
 
@@ -26,6 +35,11 @@ Exit codes:
   expectation failed (so two binaries agreeing on the same accidental
   error cannot pass the run)
 - `2` — operational error (missing binary, subprocess failure)
+
+The runner's scope is differential parity plus the positive expectations
+listed per case; it does not claim to pin every possible external behavior
+of `phr-mcp` (undocumented flags, host-specific locale/path handling, and
+timing-dependent output are out of scope).
 
 Each call and MCP step carries positive expectations (exit codes, stderr
 needles, JSONRPC success/error shape, required disk state transitions

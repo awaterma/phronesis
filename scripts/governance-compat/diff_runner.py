@@ -3,8 +3,11 @@
 
 Runs an identical, isolated set of explicit fixture inputs against two
 `phr-mcp` binaries (baseline vs candidate) and compares every observable:
-exit codes, stdout, stderr, and on-disk state (.phronesis/rules.json,
-log.jsonl, emitted-capsules.json). Raw artifacts are saved unmodified;
+exit codes (every call, with or without an `expect`), stdout, stderr, and
+on-disk state. The disk state of `.phronesis/rules.json`, `log.jsonl`, and
+`emitted-capsules.json` is captured for every case (raw + normalized) and an
+intermediate snapshot is taken at every `expect_disk` step so a later removal
+or recovery cannot hide a difference. Raw artifacts are saved unmodified;
 normalized copies (explicit nondeterminism only: the fixture temp project
 root, named timestamp fields, the generated `s-YYYY-MM-DD-<hex>` session
 id form) are compared. Rule/decision IDs, scope, error wording, and order
@@ -64,6 +67,15 @@ REQUIRED_CASES = [
     "mcp-autoload",
     "mcp-no-autopersist",
     "mcp-capsule-emission",
+]
+
+# Disk state captured (raw + normalized) for every case unless the case
+# overrides `disk`. Absent files are recorded as "<absent>" so a side that
+# removes or never writes a file cannot masquerade as a match.
+DEFAULT_DISK = [
+    ".phronesis/rules.json",
+    ".phronesis/log.jsonl",
+    ".phronesis/emitted-capsules.json",
 ]
 
 RULES_MCP_CAPSULE_ADD = {
@@ -562,6 +574,17 @@ def read_disk(root: Path, relpaths: list) -> dict:
     return out
 
 
+def snapshot_disk(root: Path, tag: str, raw: dict, norm: dict) -> None:
+    """Capture the DEFAULT_DISK state under a step-specific tag.
+
+    Intermediate snapshots keep evidence that would otherwise be erased by a
+    later removal or rewrite (e.g. broken-load recovery flows).
+    """
+    for key, content in read_disk(root, DEFAULT_DISK).items():
+        raw[f"{key}@{tag}"] = content
+        norm[f"{key}@{tag}"] = normalize(content, root)
+
+
 def label_call(index: int, call: dict) -> str:
     if "argv" in call:
         parts = [p for p in call["argv"] if isinstance(p, str)]
@@ -651,6 +674,7 @@ def run_case_side(bin_path: str, case: dict, side_dir: Path) -> tuple[dict, dict
                     label = label_call(i, call) + suffix
                     result = run_call(bin_path, root, call, cmd_env)
                     raw[f"{label}.exit"] = str(result["exit"])
+                    norm[f"{label}.exit"] = str(result["exit"])
                     raw[f"{label}.out"] = result["stdout"]
                     raw[f"{label}.err"] = result["stderr"]
                     norm[f"{label}.out"] = normalize(result["stdout"], root)
@@ -658,14 +682,17 @@ def run_case_side(bin_path: str, case: dict, side_dir: Path) -> tuple[dict, dict
                     for problem in check_expect(call.get("expect") or {}, result["exit"],
                                                 result["stdout"], result["stderr"]):
                         assertions.append(f"{case['name']}/{label}: {problem}")
-                    for spec in call.get("expect_disk") or []:
-                        for problem in check_disk_expect(spec, root):
-                            assertions.append(f"{case['name']}/{label}: {problem}")
+                    if call.get("expect_disk"):
+                        for spec in call["expect_disk"]:
+                            for problem in check_disk_expect(spec, root):
+                                assertions.append(f"{case['name']}/{label}: {problem}")
+                        snapshot_disk(root, label, raw, norm)
 
             for i, call in enumerate(case.get("calls_after") or []):
                 label = label_call(90 + i, call) + suffix
                 result = run_call(bin_path, root, call, cmd_env)
                 raw[f"{label}.exit"] = str(result["exit"])
+                norm[f"{label}.exit"] = str(result["exit"])
                 raw[f"{label}.out"] = result["stdout"]
                 raw[f"{label}.err"] = result["stderr"]
                 norm[f"{label}.out"] = normalize(result["stdout"], root)
@@ -673,11 +700,17 @@ def run_case_side(bin_path: str, case: dict, side_dir: Path) -> tuple[dict, dict
                 for problem in check_expect(call.get("expect") or {}, result["exit"],
                                             result["stdout"], result["stderr"]):
                     assertions.append(f"{case['name']}/{label}: {problem}")
+                if call.get("expect_disk"):
+                    for spec in call["expect_disk"]:
+                        for problem in check_disk_expect(spec, root):
+                            assertions.append(f"{case['name']}/{label}: {problem}")
+                    snapshot_disk(root, label, raw, norm)
 
             for spec in case.get("expect_disk") or []:
                 for problem in check_disk_expect(spec, root):
                     assertions.append(f"{case['name']}{suffix}: {problem}")
-            for key, content in read_disk(root, case.get("disk") or []).items():
+            snapshot_disk(root, f"final{suffix}", raw, norm)
+            for key, content in read_disk(root, case.get("disk") or DEFAULT_DISK).items():
                 raw[key + suffix] = content
                 norm[key + suffix] = normalize(content, root)
         finally:
@@ -806,6 +839,7 @@ def run_mcp_case(bin_path: str, case: dict, root: Path, cmd_env: dict,
             if "expect_disk" in step:
                 for problem in check_disk_expect(step["expect_disk"], root):
                     assertions.append(f"{name}/{label}: {problem}")
+                snapshot_disk(root, label, raw, norm)
     finally:
         conn.close()
     return raw, norm, problems, assertions
@@ -815,6 +849,21 @@ def unified_diff(name: str, a: str, b: str) -> str:
     return "".join(difflib.unified_diff(
         a.splitlines(keepends=True), b.splitlines(keepends=True),
         fromfile=f"baseline/{name}", tofile=f"candidate/{name}"))
+
+
+def compare_artifacts(base_norm: dict, cand_norm: dict) -> list[tuple[str, str, str]]:
+    """Return (key, baseline_value, candidate_value) for every inequality.
+
+    Keys present on only one side count as mismatches (<missing>), so an exit
+    code or disk file that one side never produced cannot pass silently.
+    """
+    mismatches = []
+    for key in sorted(set(base_norm) | set(cand_norm)):
+        a = base_norm.get(key, "<missing>")
+        b = cand_norm.get(key, "<missing>")
+        if a != b:
+            mismatches.append((key, a, b))
+    return mismatches
 
 
 def main() -> int:
@@ -882,6 +931,7 @@ def main() -> int:
             assertion_failures.append(f"baseline: {failure}")
         for failure in cand_asserts:
             assertion_failures.append(f"candidate: {failure}")
+        mismatch_keys = {k for k, _, _ in compare_artifacts(base_norm, cand_norm)}
         for key in sorted(set(base_norm) | set(cand_norm)):
             a = base_norm.get(key, "<missing>")
             b = cand_norm.get(key, "<missing>")
@@ -892,16 +942,21 @@ def main() -> int:
             n_cand.mkdir(parents=True, exist_ok=True)
             (n_base / safe).write_text(a)
             (n_cand / safe).write_text(b)
-            if a == b:
-                report["cases"][name][key] = "match"
-            else:
+            if key in mismatch_keys:
                 report["cases"][name][key] = "MISMATCH"
                 mismatches.append(f"{name}:{key}")
                 diff_dir = out_dir / "diffs" / name
                 diff_dir.mkdir(parents=True, exist_ok=True)
                 (diff_dir / (safe + ".diff")).write_text(unified_diff(key, a, b))
+            else:
+                report["cases"][name][key] = "match"
 
     missing_required = [c for c in REQUIRED_CASES if c not in ran]
+    raw_file_count = sum(
+        1 for side in ("baseline", "candidate")
+        for p in (out_dir / side).rglob("*") if p.is_file())
+    normalized_file_count = sum(
+        1 for p in (out_dir / "normalized").rglob("*") if p.is_file())
     report["summary"] = {
         "cases_run": len(ran),
         "required_cases": len(REQUIRED_CASES),
@@ -911,6 +966,8 @@ def main() -> int:
         "assertion_failure_count": len(assertion_failures),
         "assertion_failures": assertion_failures,
         "operational_errors": operational,
+        "raw_artifact_files": raw_file_count,
+        "normalized_artifact_files": normalized_file_count,
     }
     (out_dir / "report.json").write_text(json.dumps(report, indent=1, sort_keys=True))
 
