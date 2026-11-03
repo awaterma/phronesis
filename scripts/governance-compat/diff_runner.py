@@ -627,7 +627,7 @@ def check_disk_expect(spec: dict, root: Path) -> list:
             problems.append(f"{spec['path']} should be absent but exists")
         return problems
     if not target.exists():
-        if spec.get("not_contains"):
+        if spec.get("not_contains") and not spec.get("contains"):
             return problems
         problems.append(f"{spec['path']} should exist but is absent")
         return problems
@@ -720,53 +720,110 @@ def run_case_side(bin_path: str, case: dict, side_dir: Path) -> tuple[dict, dict
     return raw, norm, problems, assertions
 
 
+def normalize_mcp_stderr(text: str, root: Path) -> str:
+    # Only the timestamp field of the observed rmcp tracing formatter, not
+    # timestamps embedded in messages or arbitrary user-facing diagnostics.
+    text = re.sub(
+        r"(?m)^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z"
+        r"(?= +(?:TRACE|DEBUG|INFO|WARN|ERROR) +(?:serve_inner: )?rmcp::)",
+        "<TRACE_TS>", text)
+    return normalize(text, root)
+
+
 class McpConn:
+    CALL_TIMEOUT = 60.0
+    CLOSE_TIMEOUT = 10.0
+    MAX_LINE_BYTES = 8 * 1024 * 1024
+    MAX_STREAM_BYTES = 32 * 1024 * 1024
+
     def __init__(self, bin_path: str, root: Path, env: dict):
         self.proc = subprocess.Popen(
             [bin_path, "serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, env=env, cwd=str(root), text=True)
+            stderr=subprocess.PIPE, env=env, cwd=str(root), bufsize=0)
         self.next_id = 0
+        self.selector = selectors.DefaultSelector()
+        for stream in (self.proc.stdout, self.proc.stderr):
+            os.set_blocking(stream.fileno(), False)
+            self.selector.register(stream, selectors.EVENT_READ)
+        self.pending = bytearray()
+        self.stdout = bytearray()
+        self.stderr = bytearray()
+        self.stdout_eof = False
 
-    def _readline(self, timeout: float = 60.0) -> str:
-        sel = selectors.DefaultSelector()
-        sel.register(self.proc.stdout, selectors.EVENT_READ)
-        deadline = time.monotonic() + timeout
+    def _pump(self, deadline: float) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("timed out waiting for server response or shutdown")
+        for key, _ in self.selector.select(remaining):
+            stream = key.fileobj
+            try:
+                chunk = os.read(stream.fileno(), 65536)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                self.selector.unregister(stream)
+                if stream is self.proc.stdout:
+                    self.stdout_eof = True
+                continue
+            captured = self.stdout if stream is self.proc.stdout else self.stderr
+            if len(captured) + len(chunk) > self.MAX_STREAM_BYTES:
+                raise RuntimeError("MCP stream exceeds capture limit")
+            captured.extend(chunk)
+            if stream is self.proc.stdout:
+                self.pending.extend(chunk)
+
+    def _readline(self, deadline: float) -> str:
         while time.monotonic() < deadline:
-            events = sel.select(timeout=max(0.1, deadline - time.monotonic()))
-            if events:
-                line = self.proc.stdout.readline()
-                if line == "":
-                    raise RuntimeError("server closed stdout")
-                if line.endswith("\n"):
-                    return line
+            newline = self.pending.find(b"\n")
+            if newline >= 0:
+                if newline > self.MAX_LINE_BYTES:
+                    raise RuntimeError("MCP response exceeds line limit")
+                line = bytes(self.pending[:newline + 1])
+                del self.pending[:newline + 1]
+                return line.decode("utf-8")
+            if len(self.pending) > self.MAX_LINE_BYTES:
+                raise RuntimeError("MCP response exceeds line limit")
+            if self.stdout_eof:
+                raise RuntimeError("server closed stdout before a complete response")
+            self._pump(deadline)
         raise RuntimeError("timed out waiting for server response")
 
     def call(self, method: str, params: dict) -> dict:
+        deadline = time.monotonic() + self.CALL_TIMEOUT
         self.next_id += 1
         msg_id = self.next_id
         msg = json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params})
-        self.proc.stdin.write(msg + "\n")
-        self.proc.stdin.flush()
+        self.proc.stdin.write((msg + "\n").encode("utf-8"))
         while True:
-            value = json.loads(self._readline())
+            value = json.loads(self._readline(deadline))
             if value.get("id") == msg_id:
                 return value
 
     def notify(self, method: str, params: dict) -> None:
         msg = json.dumps({"jsonrpc": "2.0", "method": method, "params": params})
-        self.proc.stdin.write(msg + "\n")
-        self.proc.stdin.flush()
+        self.proc.stdin.write((msg + "\n").encode("utf-8"))
 
-    def close(self) -> None:
+    def close(self) -> list[str]:
+        """Observe EOF shutdown; forced cleanup is a failure, never a valid exit."""
+        problems = []
+        deadline = time.monotonic() + self.CLOSE_TIMEOUT
         try:
             self.proc.stdin.close()
-        except Exception:
-            pass
-        self.proc.terminate()
-        try:
-            self.proc.wait(timeout=10)
-        except Exception:
-            self.proc.kill()
+            while self.selector.get_map():
+                self._pump(deadline)
+                # No further RPC is expected; retain raw stdout without buffering lines.
+                self.pending.clear()
+            self.proc.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            problems.append(f"MCP shutdown failed: {exc}")
+        finally:
+            if self.proc.poll() is None:
+                self.proc.kill()
+                self.proc.wait()
+            self.selector.close()
+            self.proc.stdout.close()
+            self.proc.stderr.close()
+        return problems
 
 
 def run_mcp_case(bin_path: str, case: dict, root: Path, cmd_env: dict,
@@ -840,8 +897,17 @@ def run_mcp_case(bin_path: str, case: dict, root: Path, cmd_env: dict,
                 for problem in check_disk_expect(step["expect_disk"], root):
                     assertions.append(f"{name}/{label}: {problem}")
                 snapshot_disk(root, label, raw, norm)
+    except (OSError, RuntimeError, ValueError) as exc:
+        problems.append(f"{name}: MCP exchange failed: {exc}")
     finally:
-        conn.close()
+        problems.extend(conn.close())
+        label = f"mcp-session{suffix}"
+        raw[label + ".err"] = conn.stderr.decode("utf-8", errors="backslashreplace")
+        norm[label + ".err"] = normalize_mcp_stderr(raw[label + ".err"], root)
+        raw[label + ".exit"] = str(conn.proc.returncode)
+        norm[label + ".exit"] = raw[label + ".exit"]
+        if conn.proc.returncode != 0:
+            assertions.append(f"{name}: expected MCP shutdown exit 0, got {conn.proc.returncode}")
     return raw, norm, problems, assertions
 
 

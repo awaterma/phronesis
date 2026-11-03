@@ -8,6 +8,9 @@ later removal cannot hide a difference.
 """
 
 import importlib.util
+import os
+import time
+from unittest.mock import patch
 import re
 import subprocess
 import sys
@@ -162,6 +165,16 @@ class NormalizerNegativeControls(unittest.TestCase):
         self.assertEqual([k for k, _, _ in dr.compare_artifacts(base_msg, cand_msg)],
                          ["call-00.err"])
 
+    def test_only_rmcp_tracing_timestamp_field_is_normalized(self):
+        root = Path("/tmp/fixture")
+        stamp = "2026-11-03T06:29:08.064120Z"
+        message = stamp + "  WARN serve_inner: rmcp::service: message at " + stamp
+        normalized = dr.normalize_mcp_stderr(message, root)
+        self.assertEqual(normalized, "<TRACE_TS>  WARN serve_inner: rmcp::service: message at " + stamp)
+        self.assertEqual(dr.normalize_mcp_stderr(stamp + " user diagnostic", root),
+                         stamp + " user diagnostic")
+        self.assertNotEqual(normalized, dr.normalize_mcp_stderr(message.replace("message", "changed"), root))
+
     def test_missing_side_is_flagged_not_treated_as_match(self):
         self.assertEqual([k for k, _, _ in dr.compare_artifacts(
             {dr.label_call(0, {"argv": []}) + ".exit": "0"}, {})],
@@ -206,6 +219,118 @@ class NormalizedRetentionEndToEnd(unittest.TestCase):
                 len(sorted(p.name for p in
                            (out_dir / "baseline" / "cli-help-version").iterdir())),
                 "normalized set must mirror the raw set")
+
+
+class McpTransportTests(unittest.TestCase):
+    def stub(self, root, before="", after="", response=""):
+        path = root / "server.py"
+        path.write_text(
+            "#!" + sys.executable + "\n"
+            "import sys, json, time\n" + before + "\n"
+            "for line in sys.stdin:\n"
+            "    msg = json.loads(line)\n"
+            "    if 'id' not in msg: continue\n" + response +
+            "    print(json.dumps({'jsonrpc':'2.0', 'id':msg['id'], 'result':{}}), flush=True)\n"
+            + after + "\n")
+        path.chmod(0o755)
+        return str(path)
+
+    def run_side(self, root, **kwargs):
+        return dr.run_case_side(self.stub(root, **kwargs),
+                                {"name": "transport", "rules": None, "mcp": []},
+                                root / "artifacts")
+
+    def test_stderr_and_natural_exit_differences_are_retained(self):
+        with tempfile.TemporaryDirectory() as td:
+            base, cand = Path(td) / "base", Path(td) / "cand"
+            base.mkdir()
+            cand.mkdir()
+            rb, nb, pb, ab = self.run_side(base)
+            rc, nc, pc, ac = self.run_side(
+                cand, after="sys.stderr.write('late warning\\n')\nsys.exit(7)")
+            self.assertEqual((pb, ab, pc), ([], [], []))
+            self.assertTrue(ac)
+            mismatches = {k for k, _, _ in dr.compare_artifacts(nb, nc)}
+            self.assertEqual(mismatches, {"mcp-session.err", "mcp-session.exit"})
+            self.assertEqual(rc["mcp-session.exit"], "7")
+            self.assertEqual(rc["mcp-session.err"], "late warning\n")
+            self.assertEqual((cand / "artifacts/mcp-session.err").read_text(), "late warning\n")
+
+    def test_large_stderr_before_response_and_during_shutdown_is_drained(self):
+        with tempfile.TemporaryDirectory() as td:
+            raw, _, problems, assertions = self.run_side(
+                Path(td), before="sys.stderr.write('a' * 1048576); sys.stderr.flush()",
+                after="sys.stderr.write('b' * 1048576); sys.stderr.flush()")
+            self.assertEqual((problems, assertions), ([], []))
+            self.assertEqual(raw["mcp-session.err"], "a" * 1048576 + "b" * 1048576)
+
+    def assert_call_times_out(self, response):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            conn = dr.McpConn(self.stub(root, response=response), root, os.environ.copy())
+            conn.CALL_TIMEOUT = 0.15
+            conn.CLOSE_TIMEOUT = 0.15
+            started = time.monotonic()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "timed out"):
+                    conn.call("initialize", {})
+                self.assertLess(time.monotonic() - started, 1.0)
+            finally:
+                conn.close()
+            self.assertIsNotNone(conn.proc.poll())
+
+    def test_partial_line_cannot_bypass_deadline(self):
+        self.assert_call_times_out(
+            "    sys.stdout.write('{'); sys.stdout.flush(); time.sleep(1.5)\n")
+
+    def test_notifications_do_not_reset_call_deadline(self):
+        self.assert_call_times_out(
+            "    end = time.monotonic() + 1.5\n"
+            "    while time.monotonic() < end:\n"
+            "        print(json.dumps({'method':'progress'}), flush=True); time.sleep(.01)\n")
+
+    def test_forced_shutdown_is_a_problem_and_child_is_reaped(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            conn = dr.McpConn(self.stub(root, after="time.sleep(1.5)"), root, os.environ.copy())
+            conn.CLOSE_TIMEOUT = 0.15
+            conn.call("initialize", {})
+            self.assertTrue(conn.close())
+            self.assertIsNotNone(conn.proc.poll())
+            self.assertNotEqual(conn.proc.returncode, 0)
+
+    def test_oversized_line_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            conn = dr.McpConn(self.stub(root, response=
+                "    sys.stdout.write('x' * 4096); sys.stdout.flush()\n"), root, os.environ.copy())
+            conn.MAX_LINE_BYTES = 1024
+            try:
+                with self.assertRaisesRegex(RuntimeError, "line limit"):
+                    conn.call("initialize", {})
+            finally:
+                conn.close()
+
+    def test_timeout_preserves_stderr_and_reports_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(dr.McpConn, "CALL_TIMEOUT", .15), patch.object(dr.McpConn, "CLOSE_TIMEOUT", .15):
+                raw, _, problems, _ = self.run_side(
+                    Path(td), before="sys.stderr.write('diagnostic\\n'); sys.stderr.flush()",
+                    response="    sys.stdout.write('{'); sys.stdout.flush(); time.sleep(1.5)\n")
+            self.assertTrue(problems)
+            self.assertEqual(raw["mcp-session.err"], "diagnostic\n")
+
+
+class DiskPositiveExpectationTests(unittest.TestCase):
+    def test_missing_file_cannot_satisfy_mixed_positive_negative_assertions(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            spec = {"path": "missing", "contains": ["banner"], "not_contains": ["error"]}
+            self.assertTrue(dr.check_disk_expect(spec, root))
+            self.assertEqual(dr.check_disk_expect(
+                {"path": "missing", "not_contains": ["error"]}, root), [])
+            (root / "missing").write_text("banner")
+            self.assertEqual(dr.check_disk_expect(spec, root), [])
 
 
 if __name__ == "__main__":

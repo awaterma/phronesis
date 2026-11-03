@@ -130,3 +130,30 @@ step list (`{"tool": ..., "args": ...}`, `{"method": ..., "params": ...}`,
 `{"write_disk": ...}` for external file edits between calls). Any new case
 must be added to `REQUIRED_CASES` — the runner fails with exit 3 when a
 required case is missing.
+
+## MCP transport evidence
+
+Each MCP session saves and compares `mcp-session.err` and
+`mcp-session.exit` (with the case variant suffix where applicable).
+Stderr is drained alongside stdout during RPCs and shutdown. Closing stdin
+allows a natural server exit; a nonzero exit fails the case expectation,
+and a forced kill or timeout is an operational problem even when both sides
+behave identically. RPC responses retain their existing canonical JSON comparison.
+
+Each RPC has one 60-second deadline including unrelated notifications.
+Shutdown has a 10-second deadline. Nonblocking reads cap a response line at
+8 MiB and each captured stream at 32 MiB; exceeding a cap fails the case.
+The timestamp prefix of recognized `rmcp::` tracing lines is normalized in
+MCP stderr only. Log level, target, message, and timestamps inside messages
+remain significant. Raw stderr retains the original timestamp prefix.
+
+Use the same executable basename (normally `phr-mcp`) in separate baseline
+and candidate directories: CLI usage output legitimately includes argv[0].
+A missing disk file may satisfy a negative-only `not_contains` assertion,
+but never a simultaneous positive `contains` assertion.
+
+Focused regression suite:
+
+```bash
+python3 -m unittest discover -s scripts/governance-compat -p test_diff_runner.py -v
+```
