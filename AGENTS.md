@@ -6,9 +6,10 @@
 
 ## Quick Overview
 
-This is a Rust workspace with four crates:
+This is a Rust workspace with five crates:
 
 - **`phronesis`** - Core RETE rules engine library
+- **`phronesis-governance`** - Embeddable policy compilation, ordered composition, isolated fact-snapshot evaluation, and structured decisions; facts and evaluators are caller-supplied.
 - **`phronesis-mcp`** - MCP server for LLM-agent governance (CLAUDE.md hook integration)
 - **`phronesis-metrics`** - Prometheus `/metrics` endpoint and `phr-mcp metrics` exporter, pulled in by the default `metrics` feature
 - **`phronesis-rhai`** - Sandboxed Rhai evaluator for `__script__` guard conditions and extensible predicate providers; enabled by default in the MCP binary
