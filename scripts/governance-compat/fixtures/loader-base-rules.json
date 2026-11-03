@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {
+      "id": "no-force-push",
+      "phase": "pre",
+      "priority": 10,
+      "when": [{ "new_content_contains": "git push --force" }],
+      "then": { "block": "force push is blocked by the base layer" }
+    }
+  ]
+}

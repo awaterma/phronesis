@@ -36,6 +36,7 @@ metrics = ["dep:phronesis-metrics"]
 go-grammar = ["dep:tree-sitter-go"]
 
 [dependencies]
+phronesis-governance = { version = "0.40.0", path = "../phronesis-governance" }
 phr = { version = "0.40.0", path = "../phronesis", package = "phronesis", features = ["schemars"] }
 phronesis-rhai = { version = "0.40.0", path = "../phronesis-rhai", optional = true }
 phronesis-metrics = { version = "0.40.0", path = "../phronesis-metrics", optional = true }

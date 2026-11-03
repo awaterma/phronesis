@@ -1,0 +1,1 @@
+{"rules": [{"id": "r-block", "phase": "pre", "priority": 10, "when": [{"new_content_contains": "git push --force"}], "then": {"block": "no force push"}}, {"id": "r-warn", "phase": "pre", "priority": 10, "when": [{"new_content_contains": "deploy to prod"}], "then": {"warn": "deploy needs review"}}]}

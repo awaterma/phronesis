@@ -1,0 +1,25 @@
+{
+  "reserved_predicates": [
+    "expense_submitted",
+    "expense_over_limit",
+    "expense_missing_receipt",
+    "rule_overridden"
+  ],
+  "host": [
+    {
+      "id": "host-submitted-1044",
+      "predicate": "expense_submitted",
+      "args": ["emp-7", "exp-1044"],
+      "timestamp": 1715717101,
+      "source": "expense-system"
+    },
+    {
+      "id": "host-missing-receipt-1044",
+      "predicate": "expense_missing_receipt",
+      "args": ["emp-7", "exp-1044"],
+      "timestamp": 1715717102,
+      "source": "expense-system"
+    }
+  ],
+  "extensions": []
+}

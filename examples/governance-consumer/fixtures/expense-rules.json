@@ -1,0 +1,26 @@
+{
+  "rules": [
+    {
+      "id": "expense-over-limit",
+      "phase": "pre",
+      "priority": 10,
+      "when": [{ "expense_over_limit": ["?employee", "?report"] }],
+      "then": { "block": "expense report denied: amount exceeds the approval limit" }
+    },
+    {
+      "id": "expense-missing-receipt",
+      "phase": "pre",
+      "priority": 20,
+      "when": [{ "expense_missing_receipt": ["?employee", "?report"] }],
+      "then": { "warn": "expense report needs a receipt before it can be approved" }
+    },
+    {
+      "id": "expense-audit-trail",
+      "phase": "post",
+      "priority": 30,
+      "audit": true,
+      "when": [{ "expense_submitted": ["?employee", "?report"] }],
+      "then": { "log": "expense report entered the approval flow" }
+    }
+  ]
+}

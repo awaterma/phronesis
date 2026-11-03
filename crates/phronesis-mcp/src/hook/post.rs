@@ -298,14 +298,18 @@ fn evaluate_network(
     payload: &super::HookPayload,
     tool_name: &str,
 ) -> PostEvaluation {
-    let consequences = network.fire_all_consequences().unwrap_or_else(|error| {
+    let mut consequences = network.fire_all_consequences().unwrap_or_else(|error| {
         eprintln!("phronesis: WARNING — rule execution failed: {}", error);
         process::exit(1);
     });
     crate::capsule::capture_for_hook(&security::project_root(), &consequences);
     super::report_unbound_at_fire(&consequences);
-    let (logged, violations, warnings) =
-        super::collect_logged(&consequences, &security::project_root());
+    // The post phase is advisory: no stale-evidence demotion applies.
+    let (logged, violations, warnings) = super::collect_logged(
+        &mut consequences,
+        &security::project_root(),
+        &std::collections::BTreeSet::new(),
+    );
     let command_exit = matches!(tool_name, "Bash" | "run_shell_command")
         .then(|| super::journey_record::payload_command_exit(payload))
         .flatten();

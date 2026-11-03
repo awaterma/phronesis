@@ -1,0 +1,6 @@
+{"rules": [
+  {"id": "r-pre", "phase": "pre", "priority": 10, "when": [{"new_content_contains": "git push --force"}], "then": {"block": "no force push"}},
+  {"id": "r-post", "phase": "post", "priority": 10, "when": [{"bash_command_matches": "git push --force"}], "then": {"warn": "force push seen"}},
+  {"id": "r-audit", "phase": "audit", "priority": 10, "audit": true, "when": [{"new_content_contains": "git push --force"}], "then": {"warn": "audit-only finding"}},
+  {"id": "r-none", "phase": "none", "priority": 10, "when": [{"new_content_contains": "git push --force"}], "then": {"block": "parked"}}
+]}

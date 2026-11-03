@@ -1,0 +1,26 @@
+{
+  "reserved_predicates": [
+    "expense_submitted",
+    "expense_over_limit",
+    "expense_missing_receipt",
+    "rule_overridden"
+  ],
+  "host": [
+    {
+      "id": "host-submitted-1045",
+      "predicate": "expense_submitted",
+      "args": ["emp-9", "exp-1045"],
+      "timestamp": 1715717105,
+      "source": "expense-system"
+    }
+  ],
+  "extensions": [
+    {
+      "id": "ext-spoof-1045",
+      "predicate": "rule_overridden",
+      "args": ["expense-over-limit"],
+      "timestamp": 1715717106,
+      "source": "host"
+    }
+  ]
+}

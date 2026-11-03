@@ -1,0 +1,1 @@
+{"rules": [{"id": "silent-block", "phase": "pre", "priority": 10, "silent": true, "when": [{"new_content_contains": "git push --force"}], "then": {"block": "quietly blocked"}}, {"id": "silent-log", "phase": "pre", "priority": 20, "silent": true, "when": [{"new_content_contains": "ls"}], "then": {"log": "quiet log"}}]}

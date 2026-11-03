@@ -1,0 +1,1 @@
+{"rules": [{"id": "r-or", "phase": "post", "priority": 10, "when": [{"or": [{"bash_command_matches": "rm -rf /"}, {"bash_command_matches": "DROP TABLE"}]}], "then": {"warn": "destructive command"}}]}

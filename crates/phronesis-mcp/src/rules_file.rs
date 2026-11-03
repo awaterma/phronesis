@@ -1,645 +1,86 @@
 //! Read/write the `.phronesis/rules.json` format shared by the MCP server and
 //! the hook subcommands. The disk format carries an extra `phase` field per
 //! rule (`"pre"` or `"post"`) that the in-memory `Rule` struct lacks.
+//!
+//! Parsing, validation, OR expansion, and disk conversions are shared with
+//! `phronesis-governance` (`phronesis_governance::policy`): the types and
+//! pure functions below are compatibility re-exports, and this module keeps
+//! only the filesystem surfaces (read/read_source, atomic write, merge) plus
+//! thin wrappers that preserve this crate's public signatures (`String`
+//! check errors, `anyhow` unfold errors) and render the structured
+//! governance diagnostics as the exact legacy stderr warnings.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
-use phr::{Action, Condition, Rule};
-use serde::de::{self};
+use phr::Rule;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// One clause in a v2 rule's `when` array: a leaf condition or an OR group.
-#[derive(Debug, Clone)]
-pub enum WhenClause {
-    Leaf(DiskCondition),
-    Or(Vec<WhenClause>),
+pub use phronesis_governance::policy::{
+    ACTION_VERBS, DiskAction, DiskCondition, DiskRule, RULE_PHASES, RulesFile, WhenClause,
+    base_rule_id, rule_from_disk, rule_to_disk,
+};
+use phronesis_governance::policy::{
+    PolicyDiagnostic, PolicyError, SourceRule as GovSourceRule, parse_source,
+    unfold_or_with_diagnostics,
+};
+
+/// Legacy check-helper wrappers: same `Result<(), String>` signatures and
+/// byte-identical messages (the governance `RuleCheckError` display text is
+/// the exact message string this crate has always produced).
+pub fn check_action_type(rule_id: &str, field: &str, value: &str) -> Result<(), String> {
+    phronesis_governance::policy::check_action_type(rule_id, field, value).map_err(|e| e.0)
 }
 
-fn parse_or_clause(val: &serde_json::Value) -> anyhow::Result<WhenClause> {
-    let arr = val
-        .as_array()
-        .ok_or_else(|| anyhow!("\"or\" value must be an array of clauses"))?;
-    let alts: anyhow::Result<Vec<WhenClause>> = arr
-        .iter()
-        .map(|v| serde_json::from_value::<WhenClause>(v.clone()).map_err(|e| anyhow!("{}", e)))
-        .collect();
-    Ok(WhenClause::Or(alts?))
+pub fn check_conditions_nonempty(rule_id: &str, field: &str, len: usize) -> Result<(), String> {
+    phronesis_governance::policy::check_conditions_nonempty(rule_id, field, len).map_err(|e| e.0)
 }
 
-fn parse_leaf_clause(key: &str, val: &serde_json::Value) -> anyhow::Result<WhenClause> {
-    let predicate = key.to_string();
-    let (args, script) = if predicate == "__script__" {
-        let s = val
-            .as_str()
-            .ok_or_else(|| anyhow!("__script__ value must be a string"))?;
-        (Vec::new(), Some(s.to_string()))
-    } else {
-        let args = match val {
-            serde_json::Value::String(s) => vec![s.clone()],
-            // A boolean is a zero-arg presence marker: the predicate name is
-            // what matters, not the value (true or false). Both yield empty args.
-            serde_json::Value::Bool(_) => Vec::new(),
-            serde_json::Value::Array(items) => {
-                let mut out = Vec::with_capacity(items.len());
-                for it in items {
-                    let s = it
-                        .as_str()
-                        .ok_or_else(|| anyhow!("predicate arg array must contain strings"))?;
-                    out.push(s.to_string());
-                }
-                out
-            }
-            other => {
-                anyhow::bail!(
-                    "predicate value must be string, array, or bool; got {}",
-                    other
+pub fn check_single_action(rule_id: &str, field: &str, len: usize) -> Result<(), String> {
+    phronesis_governance::policy::check_single_action(rule_id, field, len).map_err(|e| e.0)
+}
+
+/// Expand a SourceRule's OR clauses into flat, OR-free DiskRules via
+/// disjunctive-normal-form (DNF) expansion. Each OR position contributes
+/// one alternative per (flattened) branch; the cartesian product across
+/// all positions yields the output rules. Child ids are suffixed
+/// deterministically: `#or0`, `#or1`, or `#or0-or1` for multi-position
+/// products. A single-product result (no OR, or a single-element OR)
+/// retains the original id unchanged. The logic is
+/// [`phronesis_governance::policy::unfold_or`]; this wrapper keeps the
+/// legacy `anyhow` error (carrying the bare message) and re-renders the
+/// OR-expansion notice on stderr exactly as before.
+pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
+    let (rules, diagnostics) = unfold_or_with_diagnostics(&GovSourceRule::from(source.clone()))
+        .map_err(|e| match &e {
+            PolicyError::Unfold { message, .. } => anyhow!(message.clone()),
+            other => anyhow!(other.to_string()),
+        })?;
+    render_legacy_warnings(&diagnostics, Path::new(""));
+    Ok(rules)
+}
+
+/// Render structured governance diagnostics as the exact legacy stderr
+/// warnings: duplicate-rule notices carried a
+/// `phronesis: warning: <path> ` prefix, OR-expansion notices a bare
+/// `phronesis: ` one. `path` is empty for callers outside a file read.
+fn render_legacy_warnings(diagnostics: &[PolicyDiagnostic], path: &Path) {
+    for diagnostic in diagnostics {
+        match diagnostic {
+            PolicyDiagnostic::DuplicateIdenticalRule { .. } => {
+                eprintln!(
+                    "phronesis: warning: {} {}",
+                    path.display(),
+                    diagnostic.message()
                 );
             }
-        };
-        (args, None)
-    };
-    Ok(WhenClause::Leaf(DiskCondition {
-        predicate,
-        args,
-        script,
-    }))
-}
-
-impl<'de> Deserialize<'de> for WhenClause {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // A clause is always a single-key JSON object. If the key is "or",
-        // it's a disjunction; otherwise the key is a predicate name.
-        let value = serde_json::Value::deserialize(deserializer)?;
-        let obj = value
-            .as_object()
-            .ok_or_else(|| de::Error::custom("when-clause must be a JSON object"))?;
-        if obj.len() != 1 {
-            return Err(de::Error::custom(
-                "when-clause must have exactly one key (a predicate name or \"or\")",
-            ));
-        }
-        let (key, val) = obj.iter().next().expect("len checked == 1");
-        if key == "or" {
-            return parse_or_clause(val).map_err(de::Error::custom);
-        }
-        parse_leaf_clause(key, val).map_err(de::Error::custom)
-    }
-}
-
-/// On-disk v2 rule form. OR-bearing; expanded to flat `DiskRule`s by `unfold_or`.
-#[derive(Debug, Clone)]
-pub struct SourceRule {
-    pub id: String,
-    pub phase: String,
-    pub priority: i32,
-    pub when: Vec<WhenClause>,
-    pub then: DiskAction,
-    pub silent: Option<bool>,
-    pub audit: Option<bool>,
-    pub doc_excepted: Option<bool>,
-    /// Disable code-symbol binding for rules that intentionally name foreign
-    /// or removed referents.
-    pub binds: Option<bool>,
-}
-
-/// Phases a rules file may name. `pre` blocks at the pre-tool hook, `post`
-/// warns after the tool ran, `audit` is only seen by the whole-tree audit,
-/// and `none` parks a rule without deleting it. Anything else — including a
-/// mis-cased `"Pre"` — is a load error: an unrecognized phase used to load
-/// silently and never fire, so the rule allowed everything it was written to
-/// stop.
-pub const RULE_PHASES: &[&str] = &["pre", "post", "audit", "none"];
-
-/// `then` verbs and the internal action type each one maps to. The single
-/// source of truth for which actions a rule may take: the loader, the v1
-/// `action_type` check, and the MCP `add_rule` tool all read this table.
-/// An unknown verb is a load error, not a forward-compatible pass-through —
-/// the hook only acts on these action types, so an unknown one loaded and
-/// then did nothing (decision D1).
-pub const ACTION_VERBS: &[(&str, &str)] = &[
-    ("block", "constraint_violation"),
-    ("warn", "constraint_warning"),
-    ("log", "log"),
-    ("emit_capsule", "emit_capsule"),
-];
-
-/// Top-level keys a rule object may carry (v2 and v1 legacy forms). A key
-/// outside this set is a load error: the serializer never writes it back, and
-/// a mis-cased `"Phase"` would otherwise be ignored while the rule silently
-/// took the default phase.
-const RULE_KEYS: &[&str] = &[
-    "id",
-    "phase",
-    "priority",
-    "audit",
-    "silent",
-    "doc_excepted",
-    "binds",
-    "when",
-    "then",
-    "conditions",
-    "actions",
-];
-
-/// Comma-separated list, for "allowed: …" messages.
-fn listed<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
-    items.into_iter().collect::<Vec<_>>().join(", ")
-}
-
-/// The internal action type for a `then` verb. The internal names
-/// themselves (`constraint_violation`, …) are accepted as verbs too; that is
-/// how older files and fixtures spell them, and it is unambiguous.
-fn action_type_for_verb(verb: &str) -> Option<&'static str> {
-    ACTION_VERBS
-        .iter()
-        .find(|(v, internal)| *v == verb || *internal == verb)
-        .map(|(_, internal)| *internal)
-}
-
-/// Validate an internal action type (the v1 `action_type` field and the MCP
-/// `add_rule` tool), returning the load-error message when it is unknown.
-pub fn check_action_type(rule_id: &str, field: &str, value: &str) -> Result<(), String> {
-    if ACTION_VERBS.iter().any(|(_, internal)| *internal == value) {
-        return Ok(());
-    }
-    Err(format!(
-        "rule `{rule_id}`: field `{field}` has unknown value `{value}`; allowed: {}",
-        listed(ACTION_VERBS.iter().map(|(_, internal)| *internal))
-    ))
-}
-
-/// Validate a rule's condition count. A rule with no conditions never
-/// fires, so an empty `when` loaded and silently allowed everything.
-pub fn check_conditions_nonempty(rule_id: &str, field: &str, len: usize) -> Result<(), String> {
-    if len == 0 {
-        return Err(format!(
-            "rule `{rule_id}`: field `{field}` is empty; a rule needs at least one condition"
-        ));
-    }
-    Ok(())
-}
-
-/// Validate a rule's action count. A rule carries exactly one action; a
-/// second one used to be dropped without a word.
-pub fn check_single_action(rule_id: &str, field: &str, len: usize) -> Result<(), String> {
-    if len != 1 {
-        return Err(format!(
-            "rule `{rule_id}`: field `{field}` must hold exactly one action, got {len}"
-        ));
-    }
-    Ok(())
-}
-
-fn check_phase(phase: &str) -> anyhow::Result<()> {
-    if RULE_PHASES.contains(&phase) {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "field `phase` has invalid value `{phase}`; allowed: {}",
-        listed(RULE_PHASES.iter().copied())
-    )
-}
-
-/// Map a v2 `then` object (`{"block": "msg"}`) to an internal action via
-/// [`ACTION_VERBS`]. An unknown verb is an error (fail closed at load).
-fn parse_then_action(value: &serde_json::Value) -> anyhow::Result<DiskAction> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| anyhow!("then must be a JSON object"))?;
-    if obj.len() != 1 {
-        return Err(anyhow!("then must have exactly one verb key"));
-    }
-    let (verb, msg_val) = obj.iter().next().expect("len==1");
-    let action_type = action_type_for_verb(verb)
-        .ok_or_else(|| {
-            anyhow!(
-                "field `then` has unknown verb `{verb}`; allowed: {}",
-                listed(ACTION_VERBS.iter().map(|(v, _)| *v))
-            )
-        })?
-        .to_string();
-    if action_type == "emit_capsule" {
-        if !msg_val.is_object() {
-            anyhow::bail!("emit_capsule must be an object");
-        }
-        crate::capsule::build_capsule_from_action(
-            msg_val,
-            "validation",
-            "validation",
-            0,
-            &[],
-            &HashMap::new(),
-        )
-        .map_err(|error| anyhow!(error.to_string()))?;
-    }
-    // String-valued verbs (block/warn/log) keep their message as a param;
-    // object-valued verbs (emit_capsule) carry the object as structured data.
-    if let Some(s) = msg_val.as_str() {
-        Ok(DiskAction {
-            action_type,
-            params: vec![s.to_string()],
-            ..Default::default()
-        })
-    } else {
-        Ok(DiskAction {
-            action_type,
-            params: Vec::new(),
-            data: Some(msg_val.clone()),
-        })
-    }
-}
-
-/// Inverse of `parse_then_action`: internal action → v2 verb object.
-fn action_to_then(action: &DiskAction) -> serde_json::Value {
-    let verb = match action.action_type.as_str() {
-        "constraint_violation" => "block",
-        "constraint_warning" => "warn",
-        "log" => "log",
-        other => other,
-    };
-    match &action.data {
-        Some(data) => serde_json::json!({ verb: data }),
-        None => {
-            let msg = action.params.first().cloned().unwrap_or_default();
-            serde_json::json!({ verb: msg })
-        }
-    }
-}
-
-impl SourceRule {
-    /// Build a `SourceRule` whose `then` action is the sentinel `tag` verb
-    /// and whose message is the tag itself. The journey tagger uses this
-    /// constructor to ride the existing rule-firing path without any new
-    /// matching code: every tagger compiles into one or more flat `DiskRule`s
-    /// via `unfold_or`, loads into a throwaway `ReteNetwork`, and emits a
-    /// `tag`-action consequence whose `message` is the tag name when its
-    /// `when` matches.
-    ///
-    /// Errors bubble back as `RulesFileError::Unfold` carrying the serde
-    /// parse error — keeps the journey config malformed-paths surface a
-    /// single, named error variant.
-    pub fn synthetic_tagger(tag: &str, when: &[serde_json::Value]) -> Result<Self, RulesFileError> {
-        let id = format!("tagger:{}", tag);
-        let when_clauses: Vec<WhenClause> = when
-            .iter()
-            .map(|v| serde_json::from_value::<WhenClause>(v.clone()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| RulesFileError::Unfold {
-                path: id.clone(),
-                message: e.to_string(),
-            })?;
-        Ok(SourceRule {
-            id,
-            phase: "tag".to_string(),
-            priority: 0,
-            when: when_clauses,
-            then: DiskAction {
-                action_type: "tag".to_string(),
-                params: vec![tag.to_string()],
-                ..Default::default()
-            },
-            silent: None,
-            audit: None,
-            doc_excepted: None,
-            binds: None,
-        })
-    }
-}
-
-/// A v1 string-array field. A non-string element is an error: it used to be
-/// dropped by a `filter_map`, which could empty a condition's arguments and
-/// leave a rule that never matched.
-fn string_array(value: Option<&serde_json::Value>, field: &str) -> anyhow::Result<Vec<String>> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-    let items = value
-        .as_array()
-        .ok_or_else(|| anyhow!("field `{field}` must be an array of strings, got `{value}`"))?;
-    items
-        .iter()
-        .map(|item| {
-            item.as_str().map(String::from).ok_or_else(|| {
-                anyhow!("field `{field}` has non-string value `{item}`; args must be strings")
-            })
-        })
-        .collect()
-}
-
-fn parse_when_field(
-    obj: &serde_json::Map<String, serde_json::Value>,
-) -> anyhow::Result<Vec<WhenClause>> {
-    if obj.contains_key("when") && obj.contains_key("conditions") {
-        anyhow::bail!("rule has both `when` and `conditions`; use one");
-    }
-    if let Some(when_val) = obj.get("when") {
-        let arr = when_val
-            .as_array()
-            .ok_or_else(|| anyhow!("`when` must be an array"))?;
-        if arr.is_empty() {
-            anyhow::bail!("field `when` is empty; a rule needs at least one condition");
-        }
-        arr.iter()
-            .map(|c| serde_json::from_value::<WhenClause>(c.clone()).map_err(|e| anyhow!("{}", e)))
-            .collect()
-    } else if let Some(cond_val) = obj.get("conditions") {
-        // v1 legacy: each is {predicate, args, script?}.
-        let arr = cond_val
-            .as_array()
-            .ok_or_else(|| anyhow!("`conditions` must be an array"))?;
-        if arr.is_empty() {
-            anyhow::bail!("field `conditions` is empty; a rule needs at least one condition");
-        }
-        arr.iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let co = c
-                    .as_object()
-                    .ok_or_else(|| anyhow!("v1 condition must be an object"))?;
-                if let Some(key) = co
-                    .keys()
-                    .find(|k| !["predicate", "args", "script"].contains(&k.as_str()))
-                {
-                    anyhow::bail!(
-                        "field `conditions[{i}]` has unknown key `{key}`; allowed: predicate, args, script"
-                    );
-                }
-                let predicate = co
-                    .get("predicate")
-                    .and_then(|x| x.as_str())
-                    .ok_or_else(|| anyhow!("v1 condition missing `predicate`"))?
-                    .to_string();
-                let args = string_array(co.get("args"), &format!("conditions[{i}].args"))?;
-                let script = match co.get("script") {
-                    None => None,
-                    Some(x) => Some(
-                        x.as_str()
-                            .ok_or_else(|| {
-                                anyhow!("field `conditions[{i}].script` must be a string, got `{x}`")
-                            })?
-                            .to_string(),
-                    ),
-                };
-                Ok(WhenClause::Leaf(DiskCondition {
-                    predicate,
-                    args,
-                    script,
-                }))
-            })
-            .collect()
-    } else {
-        anyhow::bail!("rule has neither `when` nor `conditions`")
-    }
-}
-
-fn parse_then_field(
-    obj: &serde_json::Map<String, serde_json::Value>,
-) -> anyhow::Result<DiskAction> {
-    if obj.contains_key("then") && obj.contains_key("actions") {
-        anyhow::bail!("rule has both `then` and `actions`; use one");
-    }
-    if let Some(then_val) = obj.get("then") {
-        parse_then_action(then_val)
-    } else if let Some(actions_val) = obj.get("actions") {
-        let actions = actions_val
-            .as_array()
-            .ok_or_else(|| anyhow!("v1 `actions` must be an array"))?;
-        if actions.len() != 1 {
-            anyhow::bail!(
-                "field `actions` must hold exactly one action, got {}",
-                actions.len()
-            );
-        }
-        let ao = actions[0]
-            .as_object()
-            .ok_or_else(|| anyhow!("v1 action must be an object"))?;
-        if let Some(key) = ao
-            .keys()
-            .find(|k| !["action_type", "params"].contains(&k.as_str()))
-        {
-            anyhow::bail!(
-                "field `actions[0]` has unknown key `{key}`; allowed: action_type, params"
-            );
-        }
-        let action_type = ao
-            .get("action_type")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| anyhow!("v1 action missing `action_type`"))?
-            .to_string();
-        // `emit_capsule` needs a structured body, which only the v2 `then`
-        // form carries; the v1 form can name the three message actions.
-        if action_type == "emit_capsule" || !ACTION_VERBS.iter().any(|(_, t)| *t == action_type) {
-            anyhow::bail!(
-                "field `actions[0].action_type` has unknown value `{action_type}`; allowed: {} (use the v2 `then` form for emit_capsule)",
-                listed(
-                    ACTION_VERBS
-                        .iter()
-                        .map(|(_, t)| *t)
-                        .filter(|t| *t != "emit_capsule")
-                )
-            );
-        }
-        let params = string_array(ao.get("params"), "actions[0].params")?;
-        Ok(DiskAction {
-            action_type,
-            params,
-            ..Default::default()
-        })
-    } else {
-        anyhow::bail!("rule has neither `then` nor `actions`")
-    }
-}
-
-impl<'de> Deserialize<'de> for SourceRule {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let v = serde_json::Value::deserialize(deserializer)?;
-        let obj = v
-            .as_object()
-            .ok_or_else(|| de::Error::custom("rule must be a JSON object"))?;
-        let id = obj
-            .get("id")
-            .and_then(|x| x.as_str())
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| de::Error::custom("rule missing non-empty string `id`"))?
-            .to_string();
-        // Every semantic error names the rule, so a hook that refuses the
-        // file tells the human exactly which rule and field to fix.
-        let in_rule = |e: anyhow::Error| de::Error::custom(format!("rule `{id}`: {e}"));
-        parse_source_rule(&id, obj).map_err(in_rule)
-    }
-}
-
-/// Validate and parse one rule object once its `id` is known. Malformed
-/// semantics fail closed here, at load, exactly like malformed JSON: every
-/// reader of a rules file (hooks, Codex adapter, audit, MCP tools) goes
-/// through this function, so they all reject the same shapes with the same
-/// message.
-fn parse_source_rule(
-    id: &str,
-    obj: &serde_json::Map<String, serde_json::Value>,
-) -> anyhow::Result<SourceRule> {
-    if let Some(key) = obj.keys().find(|k| !RULE_KEYS.contains(&k.as_str())) {
-        anyhow::bail!(
-            "unknown key `{key}`; allowed keys: {}",
-            listed(RULE_KEYS.iter().copied())
-        );
-    }
-    let phase = match obj.get("phase") {
-        // A missing phase keeps its documented default.
-        None => "pre".to_string(),
-        Some(value) => value
-            .as_str()
-            .ok_or_else(|| anyhow!("field `phase` must be a string, got `{value}`"))?
-            .to_string(),
-    };
-    check_phase(&phase)?;
-    let priority = match obj.get("priority") {
-        None => 0,
-        Some(value) => value
-            .as_i64()
-            .and_then(|p| i32::try_from(p).ok())
-            .ok_or_else(|| anyhow!("field `priority` must be a 32-bit integer, got `{value}`"))?,
-    };
-    let flag = |key: &str| -> anyhow::Result<Option<bool>> {
-        match obj.get(key) {
-            None => Ok(None),
-            Some(value) => value
-                .as_bool()
-                .map(Some)
-                .ok_or_else(|| anyhow!("field `{key}` must be true or false, got `{value}`")),
-        }
-    };
-    Ok(SourceRule {
-        id: id.to_string(),
-        phase,
-        priority,
-        when: parse_when_field(obj)?,
-        then: parse_then_field(obj)?,
-        silent: flag("silent")?,
-        audit: flag("audit")?,
-        doc_excepted: flag("doc_excepted")?,
-        binds: flag("binds")?,
-    })
-}
-
-impl Serialize for WhenClause {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let v = match self {
-            WhenClause::Or(alts) => {
-                let arr: Vec<serde_json::Value> = alts
-                    .iter()
-                    .map(|c| serde_json::to_value(c).unwrap_or(serde_json::Value::Null))
-                    .collect();
-                serde_json::json!({ "or": arr })
+            PolicyDiagnostic::LargeOrExpansion { .. } => {
+                eprintln!("phronesis: {}", diagnostic.message());
             }
-            WhenClause::Leaf(c) => {
-                if let Some(script) = &c.script {
-                    serde_json::json!({ "__script__": script })
-                } else {
-                    let value = match c.args.len() {
-                        0 => serde_json::Value::Bool(true),
-                        1 => serde_json::Value::String(c.args[0].clone()),
-                        _ => serde_json::Value::Array(
-                            c.args
-                                .iter()
-                                .cloned()
-                                .map(serde_json::Value::String)
-                                .collect(),
-                        ),
-                    };
-                    serde_json::json!({ c.predicate.clone(): value })
-                }
-            }
-        };
-        v.serialize(serializer)
+        }
     }
-}
-
-impl Serialize for SourceRule {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeMap;
-        // Pinned key order: id, phase, priority, metadata, when, then.
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("id", &self.id)?;
-        map.serialize_entry("phase", &self.phase)?;
-        map.serialize_entry("priority", &self.priority)?;
-        if let Some(a) = self.audit {
-            map.serialize_entry("audit", &a)?;
-        }
-        if let Some(s) = self.silent {
-            map.serialize_entry("silent", &s)?;
-        }
-        if let Some(d) = self.doc_excepted {
-            map.serialize_entry("doc_excepted", &d)?;
-        }
-        if let Some(b) = self.binds {
-            map.serialize_entry("binds", &b)?;
-        }
-        map.serialize_entry("when", &self.when)?;
-        map.serialize_entry("then", &action_to_then(&self.then))?;
-        map.end()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DiskRule {
-    pub id: String,
-    pub phase: String,
-    pub priority: i32,
-    pub conditions: Vec<DiskCondition>,
-    pub actions: Vec<DiskAction>,
-    /// When `Some(true)`, this rule is hidden from `session-context`
-    /// output. Escape hatch for noisy packs. The engine itself ignores
-    /// this field — it only affects the SessionStart summary.
-    pub silent: Option<bool>,
-    /// When `Some(true)`, this rule participates in whole-tree audits
-    /// (`audit_codebase` / `phr-mcp audit`). Rules without it are
-    /// skipped — typically the LLM-deflection pack and any diff-only
-    /// rule whose predicates don't make sense over current file state.
-    pub audit: Option<bool>,
-    /// When `Some(true)`, audit matches whose immediately preceding
-    /// non-blank line is a `///` doc-comment are suppressed. Lets a
-    /// rule whose message is "either delete or document" honor the
-    /// "document" branch — the reader has supplied an explanation, so
-    /// the audit doesn't keep flagging it. Only consulted by the audit
-    /// engine; ignored at hook time.
-    pub doc_excepted: Option<bool>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiskCondition {
-    pub predicate: String,
-    pub args: Vec<String>,
-    pub script: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DiskAction {
-    pub action_type: String,
-    pub params: Vec<String>,
-    /// Structured payload for verbs whose value is a JSON object (e.g.
-    /// `emit_capsule`). `None` for string-valued verbs (block/warn/log).
-    pub data: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RulesFile {
-    pub rules: Vec<DiskRule>,
 }
 
 #[derive(Debug, Error)]
@@ -677,6 +118,115 @@ impl RulesFileError {
     }
 }
 
+/// Thin compatibility wrapper over the governance
+/// [`phronesis_governance::policy::SourceRule`]: identical public fields and
+/// identical serde behavior (parsing, validation, and serialization are
+/// delegated — nothing is duplicated here), so this crate keeps its
+/// historical public surface. The one behavioral hold-out is
+/// [`SourceRule::synthetic_tagger`], which still returns
+/// `Result<Self, RulesFileError>` with the legacy wording.
+#[derive(Debug, Clone)]
+pub struct SourceRule {
+    pub id: String,
+    pub phase: String,
+    pub priority: i32,
+    pub when: Vec<WhenClause>,
+    pub then: DiskAction,
+    pub silent: Option<bool>,
+    pub audit: Option<bool>,
+    pub doc_excepted: Option<bool>,
+    /// Disable code-symbol binding for rules that intentionally name foreign
+    /// or removed referents.
+    pub binds: Option<bool>,
+}
+
+impl From<SourceRule> for GovSourceRule {
+    fn from(rule: SourceRule) -> Self {
+        GovSourceRule {
+            id: rule.id,
+            phase: rule.phase,
+            priority: rule.priority,
+            when: rule.when,
+            then: rule.then,
+            silent: rule.silent,
+            audit: rule.audit,
+            doc_excepted: rule.doc_excepted,
+            binds: rule.binds,
+        }
+    }
+}
+
+impl From<GovSourceRule> for SourceRule {
+    fn from(rule: GovSourceRule) -> Self {
+        SourceRule {
+            id: rule.id,
+            phase: rule.phase,
+            priority: rule.priority,
+            when: rule.when,
+            then: rule.then,
+            silent: rule.silent,
+            audit: rule.audit,
+            doc_excepted: rule.doc_excepted,
+            binds: rule.binds,
+        }
+    }
+}
+
+impl Serialize for SourceRule {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        GovSourceRule::from(self.clone()).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceRule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        GovSourceRule::deserialize(deserializer).map(Self::from)
+    }
+}
+
+impl SourceRule {
+    /// Build a `SourceRule` whose `then` action is the sentinel `tag` verb
+    /// and whose message is the tag itself. The journey tagger uses this
+    /// constructor to ride the existing rule-firing path without any new
+    /// matching code: every tagger compiles into one or more flat `DiskRule`s
+    /// via `unfold_or`, loads into a throwaway `ReteNetwork`, and emits a
+    /// `tag`-action consequence whose `message` is the tag name when its
+    /// `when` matches.
+    ///
+    /// Errors bubble back as `RulesFileError::Unfold` carrying the serde
+    /// parse error — keeps the journey config malformed-paths surface a
+    /// single, named error variant. Construction is delegated to the
+    /// governance core; only the error mapping stays here.
+    pub fn synthetic_tagger(tag: &str, when: &[serde_json::Value]) -> Result<Self, RulesFileError> {
+        GovSourceRule::synthetic_tagger(tag, when)
+            .map(Self::from)
+            .map_err(|error| match error {
+                PolicyError::Unfold { source_id, message } => RulesFileError::Unfold {
+                    path: source_id,
+                    message,
+                },
+                // synthetic_tagger cannot produce any other variant; if one
+                // ever does, fail closed onto the same legacy variant.
+                other => RulesFileError::Unfold {
+                    path: String::new(),
+                    message: other.to_string(),
+                },
+            })
+    }
+}
+
+/// Project-relative location of the default rules file. `default_path` joins
+/// this onto the project root; the layer resolver names the same relative
+/// string so the root is joined exactly once and no root bytes are
+/// round-tripped through a lossy display string.
+pub const DEFAULT_RULES_RELATIVE_PATH: &str = ".phronesis/rules.json";
+
 /// Default state of the rules file under the project root.
 pub fn default_path(project_root: &Path) -> PathBuf {
     project_root.join(".phronesis").join("rules.json")
@@ -684,22 +234,36 @@ pub fn default_path(project_root: &Path) -> PathBuf {
 
 /// Read the rules file at `path`. Returns `Ok(RulesFile{rules:vec![]})` when the
 /// file does not exist (the "no rules configured" case). Returns `Err` when the
-/// file exists but is unreadable or malformed.
+/// file exists but is unreadable or malformed. Parsing and unfolding are
+/// delegated to `phronesis_governance::policy`; the structured diagnostics
+/// (identical-duplicate notices, large OR expansions) are re-rendered here as
+/// the exact legacy stderr warnings, and unfold errors map back onto
+/// [`RulesFileError::Unfold`] with the bare message.
 pub fn read(path: &Path) -> Result<RulesFile, RulesFileError> {
     let sources = read_source(path)?;
     let mut flat = Vec::new();
     for sr in &sources {
-        let expanded = unfold_or(sr).map_err(|e| RulesFileError::Unfold {
-            path: path.display().to_string(),
-            message: e.to_string(),
-        })?;
+        let (expanded, diagnostics) = unfold_or_with_diagnostics(&GovSourceRule::from(sr.clone()))
+            .map_err(|error| RulesFileError::Unfold {
+                path: path.display().to_string(),
+                message: match &error {
+                    PolicyError::Unfold { message, .. } => message.clone(),
+                    other => other.to_string(),
+                },
+            })?;
+        render_legacy_warnings(&diagnostics, path);
         flat.extend(expanded);
     }
     Ok(RulesFile { rules: flat })
 }
 
 /// Parse the file into OR-bearing `SourceRule`s without unfolding. Used by
-/// migration (which preserves OR on disk).
+/// migration (which preserves OR on disk). Parsing is delegated to
+/// `phronesis_governance::policy::parse_source` with the displayed path as
+/// the opaque source id; identical-duplicate notices re-render as the exact
+/// legacy stderr warnings. The typed serde error behind
+/// [`RulesFileError::Malformed`] is recovered by re-parsing rejected
+/// content, which fails identically to the delegation's parse.
 pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
     if !path.exists() {
         return Ok(vec![]);
@@ -709,210 +273,38 @@ pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
         source: e,
     })?;
     #[derive(Deserialize)]
+    #[allow(dead_code)]
     struct Wrapper {
         rules: Vec<SourceRule>,
     }
-    let w: Wrapper = serde_json::from_str(&content).map_err(|e| RulesFileError::Malformed {
-        path: path.display().to_string(),
-        source: e,
-    })?;
-    dedupe_identical(path, &content, w.rules)
-}
-
-/// Two rules with one id are ambiguous: which one the engine keeps depends
-/// on load order, so differing copies are a load error. (Layer overrides
-/// across files are the supported way to replace a rule.) Copies that are
-/// identical JSON are not ambiguous — older MCP servers wrote them when a
-/// guide was extracted twice — so they load as one rule, with a warning
-/// asking for the extras to be deleted.
-fn dedupe_identical(
-    path: &Path,
-    content: &str,
-    rules: Vec<SourceRule>,
-) -> Result<Vec<SourceRule>, RulesFileError> {
-    let mut seen = std::collections::HashSet::new();
-    if rules.iter().all(|r| seen.insert(r.id.as_str())) {
-        return Ok(rules);
-    }
-    // Only reached with duplicates: compare the raw JSON of each copy.
-    #[derive(Deserialize)]
-    struct Raw {
-        rules: Vec<serde_json::Value>,
-    }
-    let raw: Raw = serde_json::from_str(content).map_err(|e| RulesFileError::Malformed {
-        path: path.display().to_string(),
-        source: e,
-    })?;
-    let mut first: HashMap<&str, &serde_json::Value> = HashMap::new();
-    let mut keep = Vec::with_capacity(rules.len());
-    let mut warned = std::collections::HashSet::new();
-    for (rule, value) in rules.iter().zip(&raw.rules) {
-        match first.get(rule.id.as_str()) {
-            None => {
-                first.insert(rule.id.as_str(), value);
-                keep.push(rule.clone());
-            }
-            Some(previous) if *previous == value => {
-                if warned.insert(rule.id.as_str()) {
-                    eprintln!(
-                        "phronesis: warning: {} lists rule `{}` more than once with identical content; using one copy — delete the extras",
-                        path.display(),
-                        rule.id
-                    );
+    let parsed =
+        parse_source(&content, &path.display().to_string()).map_err(|error| match error {
+            PolicyError::Malformed { message, .. } => {
+                match serde_json::from_str::<Wrapper>(&content) {
+                    Err(source) => RulesFileError::Malformed {
+                        path: path.display().to_string(),
+                        source,
+                    },
+                    Ok(_) => RulesFileError::Invalid {
+                        path: path.display().to_string(),
+                        message,
+                    },
                 }
             }
-            Some(_) => {
-                return Err(RulesFileError::Invalid {
-                    path: path.display().to_string(),
-                    message: format!(
-                        "duplicate rule id `{}` with differing definitions; keep the one you want and delete the others (each rule id must appear once per file)",
-                        rule.id
-                    ),
-                });
-            }
-        }
-    }
-    Ok(keep)
+            PolicyError::Invalid { message, .. } => RulesFileError::Invalid {
+                path: path.display().to_string(),
+                message,
+            },
+            // parse_source never unfolds, so these cannot occur; fail closed.
+            PolicyError::Unfold { message, .. } => RulesFileError::Invalid {
+                path: path.display().to_string(),
+                message,
+            },
+        })?;
+    render_legacy_warnings(&parsed.diagnostics, path);
+    Ok(parsed.rules.into_iter().map(SourceRule::from).collect())
 }
 
-/// Cartesian product of per-position alternative condition sets, tracking the
-/// chosen alt index at each OR position so the caller can construct ids.
-fn cartesian_product(
-    position_alts: &[Vec<Vec<DiskCondition>>],
-    is_or_position: &[bool],
-) -> Vec<(Vec<usize>, Vec<DiskCondition>)> {
-    let mut results: Vec<(Vec<usize>, Vec<DiskCondition>)> = vec![(Vec::new(), Vec::new())];
-    for (pos, alts) in position_alts.iter().enumerate() {
-        results = {
-            let mut next = Vec::new();
-            for (idx_path, conds) in &results {
-                for (alt_idx, alt_conds) in alts.iter().enumerate() {
-                    let new_path: Vec<usize> = if is_or_position[pos] {
-                        idx_path
-                            .iter()
-                            .cloned()
-                            .chain(std::iter::once(alt_idx))
-                            .collect()
-                    } else {
-                        idx_path.clone()
-                    };
-                    let new_conds: Vec<DiskCondition> = conds
-                        .iter()
-                        .cloned()
-                        .chain(alt_conds.iter().cloned())
-                        .collect();
-                    next.push((new_path, new_conds));
-                }
-            }
-            next
-        };
-    }
-    results
-}
-
-/// Strip the OR-expansion suffix that `unfold_or` appends to child rule ids
-/// (`#or0`, `#or0-or1`, …), returning the base id as authored on disk.
-/// Decision pages, drift detectors, and consequence provenance identify
-/// rules by this logical id; ids without an expansion suffix — including
-/// ids that merely contain `#or` — are returned unchanged.
-pub fn base_rule_id(id: &str) -> &str {
-    match id.split_once('#') {
-        Some((base, suffix)) if is_or_expansion_suffix(suffix) => base,
-        _ => id,
-    }
-}
-
-/// `unfold_or` suffix grammar: `or<digits>` per or-position, joined by `-`
-/// for multi-position products (`#or0`, `#or0-or1`, `#or0-or1-or2`, …).
-fn is_or_expansion_suffix(suffix: &str) -> bool {
-    suffix.split('-').all(|part| {
-        part.strip_prefix("or")
-            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-    })
-}
-
-/// Expand a SourceRule's OR clauses into flat, OR-free DiskRules via
-/// disjunctive-normal-form (DNF) expansion. Each OR position contributes
-/// one alternative per (flattened) branch; the cartesian product across
-/// all positions yields the output rules. Child ids are suffixed
-/// deterministically: `#or0`, `#or1`, or `#or0-or1` for multi-position
-/// products. A single-product result (no OR, or a single-element OR)
-/// retains the original id unchanged.
-pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
-    // For each `when` position, compute the list of condition-alternatives.
-    // A Leaf has exactly one alternative (no suffix contribution).
-    // An Or contributes one alternative per flattened branch.
-    fn alternatives(clause: &WhenClause, rule_id: &str) -> anyhow::Result<Vec<Vec<DiskCondition>>> {
-        match clause {
-            WhenClause::Leaf(c) => Ok(vec![vec![c.clone()]]),
-            WhenClause::Or(alts) => {
-                if alts.is_empty() {
-                    anyhow::bail!("rule `{}` has an empty `or` (unsatisfiable)", rule_id);
-                }
-                let mut out = Vec::new();
-                for alt in alts {
-                    // Flatten nested OR by recursion: each branch yields its own alternatives.
-                    let branch = alternatives(alt, rule_id)?;
-                    out.extend(branch);
-                }
-                Ok(out)
-            }
-        }
-    }
-
-    // Per-position alternative sets. Leaf positions have one alternative (no
-    // index pushed to path); OR positions with >1 branch push an alt index.
-    let (position_alts, is_or_position) = {
-        let mut pa: Vec<Vec<Vec<DiskCondition>>> = Vec::new();
-        let mut ior: Vec<bool> = Vec::new();
-        for clause in &source.when {
-            let alts = alternatives(clause, &source.id)?;
-            ior.push(matches!(clause, WhenClause::Or(_)) && alts.len() > 1);
-            pa.push(alts);
-        }
-        (pa, ior)
-    };
-
-    let results = cartesian_product(&position_alts, &is_or_position);
-
-    if results.len() > 32 {
-        eprintln!(
-            "phronesis: rule `{}` expands to {} rules via OR — consider simplifying",
-            source.id,
-            results.len()
-        );
-    }
-
-    let multiple = results.len() > 1;
-    Ok(results
-        .into_iter()
-        .map(|(idx_path, conditions)| {
-            let id = if multiple && !idx_path.is_empty() {
-                let suffix = idx_path
-                    .iter()
-                    .map(|i| format!("or{}", i))
-                    .collect::<Vec<_>>()
-                    .join("-");
-                format!("{}#{}", source.id, suffix)
-            } else {
-                source.id.clone()
-            };
-            DiskRule {
-                id,
-                phase: source.phase.clone(),
-                priority: source.priority,
-                conditions,
-                actions: vec![source.then.clone()],
-                silent: source.silent,
-                audit: source.audit,
-                doc_excepted: source.doc_excepted,
-            }
-        })
-        .collect())
-}
-
-/// Atomically write a rules file to `path`. Creates parent directories if needed
-/// and preserves a single `.bak` of the previous contents. Emits v2 shape.
 pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError> {
     // Refuse rather than overwrite a file that does not load: carrying its
     // metadata forward is impossible, and replacing it would discard the
@@ -1026,63 +418,6 @@ fn diskrule_to_source(d: &DiskRule) -> SourceRule {
     }
 }
 
-/// Convert an in-memory `Rule` plus a phase string into the disk form.
-pub fn rule_to_disk(rule: &Rule, phase: &str) -> DiskRule {
-    DiskRule {
-        id: rule.id.clone(),
-        phase: phase.to_string(),
-        priority: rule.priority,
-        conditions: rule
-            .conditions
-            .iter()
-            .map(|c| DiskCondition {
-                predicate: c.predicate.clone(),
-                args: c.args.clone(),
-                script: c.script.clone(),
-            })
-            .collect(),
-        actions: rule
-            .actions
-            .iter()
-            .map(|a| DiskAction {
-                action_type: a.action_type.clone(),
-                params: a.params.clone(),
-                data: a.data.clone(),
-            })
-            .collect(),
-        silent: None,
-        audit: None,
-        doc_excepted: None,
-    }
-}
-
-/// Convert a disk rule back into an in-memory `Rule` plus its phase.
-pub fn rule_from_disk(disk: &DiskRule) -> (Rule, String) {
-    let rule = Rule {
-        id: disk.id.clone(),
-        priority: disk.priority,
-        conditions: disk
-            .conditions
-            .iter()
-            .map(|c| Condition {
-                predicate: c.predicate.clone(),
-                args: c.args.clone(),
-                script: c.script.clone(),
-            })
-            .collect(),
-        actions: disk
-            .actions
-            .iter()
-            .map(|a| Action {
-                action_type: a.action_type.clone(),
-                params: a.params.clone(),
-                data: a.data.clone(),
-            })
-            .collect(),
-    };
-    (rule, disk.phase.clone())
-}
-
 /// Merge `in_memory` rules with `existing` disk rules.
 ///
 /// - Rules present in both (by ID) → in-memory version wins, with the in-memory
@@ -1171,6 +506,27 @@ pub fn merge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phr::{Action, Condition};
+
+    #[test]
+    fn v2_action_verbs_via_source_rule() {
+        let block: SourceRule = serde_json::from_str(
+            r#"{ "id": "t", "when": [{ "file_path_matches": "src/" }], "then": { "block": "no unwrap" } }"#,
+        )
+        .unwrap();
+        assert_eq!(block.then.action_type, "constraint_violation");
+        assert_eq!(block.then.params, vec!["no unwrap".to_string()]);
+        let warn: SourceRule = serde_json::from_str(
+            r#"{ "id": "t", "when": [{ "file_path_matches": "src/" }], "then": { "warn": "m" } }"#,
+        )
+        .unwrap();
+        assert_eq!(warn.then.action_type, "constraint_warning");
+        let log: SourceRule = serde_json::from_str(
+            r#"{ "id": "t", "when": [{ "file_path_matches": "src/" }], "then": { "log": "m" } }"#,
+        )
+        .unwrap();
+        assert_eq!(log.then.action_type, "log");
+    }
 
     fn rule(id: &str, priority: i32) -> Rule {
         Rule {
@@ -1534,54 +890,6 @@ mod tests {
     }
 
     #[test]
-    fn v2_clause_rejects_malformed_inputs() {
-        assert!(serde_json::from_str::<WhenClause>(r#""just_a_string""#).is_err());
-        assert!(serde_json::from_str::<WhenClause>(r#"{"a": true, "b": true}"#).is_err());
-        assert!(serde_json::from_str::<WhenClause>(r#"{"or": "not_an_array"}"#).is_err());
-        assert!(serde_json::from_str::<WhenClause>(r#"{"pred": 42}"#).is_err());
-    }
-
-    #[test]
-    fn v2_action_block() {
-        let json = r#"{ "block": "no unwrap" }"#;
-        let a = parse_then_action(&serde_json::from_str(json).unwrap()).unwrap();
-        assert_eq!(a.action_type, "constraint_violation");
-        assert_eq!(a.params, vec!["no unwrap".to_string()]);
-    }
-
-    #[test]
-    fn v2_action_warn_and_log() {
-        let w = parse_then_action(&serde_json::from_str(r#"{ "warn": "m" }"#).unwrap()).unwrap();
-        assert_eq!(w.action_type, "constraint_warning");
-        let l = parse_then_action(&serde_json::from_str(r#"{ "log": "m" }"#).unwrap()).unwrap();
-        assert_eq!(l.action_type, "log");
-    }
-
-    #[test]
-    fn emit_capsule_structured_action_round_trips_canonically() {
-        let value = serde_json::json!({"emit_capsule": {
-            "id": "review-layering", "body": "why: ?reason", "lifecycle": "session",
-            "priority": 50, "max_bytes": 512, "expires_after": "7d"
-        }});
-        let action = parse_then_action(&value).unwrap();
-        assert!(action.params.is_empty());
-        assert_eq!(action.data.as_ref().unwrap()["body"], "why: ?reason");
-        assert_eq!(action_to_then(&action), value);
-    }
-
-    #[test]
-    fn emit_capsule_rejects_invalid_contract_values() {
-        for value in [
-            serde_json::json!({"emit_capsule":{"id":"?dynamic","body":"x","lifecycle":"session"}}),
-            serde_json::json!({"emit_capsule":{"id":"x","body":"x","lifecycle":"forever"}}),
-            serde_json::json!({"emit_capsule":{"id":"x","body":"x","lifecycle":"persistent","expires_after":"0d"}}),
-            serde_json::json!({"emit_capsule":{"id":"x","body":"x","lifecycle":"session","unknown":true}}),
-        ] {
-            assert!(parse_then_action(&value).is_err(), "accepted {value}");
-        }
-    }
-
-    #[test]
     fn source_rule_parses_v2() {
         let json = r#"{
             "id": "r1", "phase": "pre", "priority": 10, "audit": true, "binds": false,
@@ -1867,146 +1175,80 @@ mod tests {
             Some("rank > 5".to_string())
         );
     }
-}
-
-#[cfg(test)]
-mod when_clause_deserialize_tests {
-    use super::*;
-
-    fn parse(json: &str) -> Result<WhenClause, serde_json::Error> {
-        serde_json::from_str::<WhenClause>(json)
-    }
-
-    fn leaf(clause: &WhenClause) -> &DiskCondition {
-        match clause {
-            WhenClause::Leaf(c) => c,
-            WhenClause::Or(_) => panic!("expected leaf"),
-        }
-    }
-
+    /// The public constructor must keep its exact legacy return type: a
+    /// caller assigning to `Result<SourceRule, RulesFileError>` (as the
+    /// journey tagger config surface documents) must compile unchanged.
+    /// The `ok` assignment below is the compile-time assertion.
     #[test]
-    fn when_clause_deserialize_string_is_single_arg() {
-        let c = parse(r#"{"new_content_contains": ".unwrap()"}"#).expect("parse");
-        let l = leaf(&c);
-        assert_eq!(l.predicate, "new_content_contains");
-        assert_eq!(l.args, vec![".unwrap()"]);
-        assert!(l.script.is_none());
-    }
-
-    #[test]
-    fn when_clause_deserialize_array_is_multi_arg() {
-        let c = parse(r#"{"function_param_count_high": ["?file", "?fn", "?n"]}"#).expect("parse");
-        assert_eq!(leaf(&c).args, vec!["?file", "?fn", "?n"]);
-    }
-
-    #[test]
-    fn when_clause_deserialize_bool_is_zero_arg() {
-        for v in ["true", "false"] {
-            let c = parse(&format!(r#"{{"flag": {v}}}"#)).expect("parse");
-            assert!(leaf(&c).args.is_empty());
-            assert_eq!(leaf(&c).predicate, "flag");
-        }
-    }
-
-    #[test]
-    fn when_clause_deserialize_script() {
-        let c = parse(r#"{"__script__": "rank > 5"}"#).expect("parse");
-        let l = leaf(&c);
-        assert_eq!(l.predicate, "__script__");
-        assert!(l.args.is_empty());
-        assert_eq!(l.script.as_deref(), Some("rank > 5"));
-    }
-
-    #[test]
-    fn when_clause_deserialize_script_must_be_string() {
-        let err = parse(r#"{"__script__": 5}"#).unwrap_err();
-        assert!(err.to_string().contains("__script__"), "{err}");
-    }
-
-    #[test]
-    fn when_clause_deserialize_or_nested() {
-        let c = parse(r#"{"or": [{"a": "1"}, {"or": [{"b": true}, {"c": ["x","y"]}]}]}"#)
-            .expect("parse");
-        let WhenClause::Or(alts) = c else {
-            panic!("expected or")
-        };
-        assert_eq!(alts.len(), 2);
-        assert_eq!(leaf(&alts[0]).predicate, "a");
-        let WhenClause::Or(inner) = &alts[1] else {
-            panic!("expected nested or")
-        };
-        assert_eq!(inner.len(), 2);
-        assert_eq!(leaf(&inner[1]).args, vec!["x", "y"]);
-    }
-
-    #[test]
-    fn when_clause_deserialize_rejects_non_object() {
-        for bad in ["\"str\"", "5", "[]", "null", "true"] {
-            let err = parse(bad).unwrap_err();
-            assert!(err.to_string().contains("JSON object"), "{bad}: {err}");
-        }
-    }
-
-    #[test]
-    fn when_clause_deserialize_rejects_zero_or_multiple_keys() {
-        assert!(
-            parse("{}")
-                .unwrap_err()
-                .to_string()
-                .contains("exactly one key")
+    fn synthetic_tagger_keeps_legacy_error_type_and_display() {
+        let ok: Result<SourceRule, RulesFileError> = SourceRule::synthetic_tagger(
+            "missing-test",
+            &[serde_json::json!({"change_set_has_production_rust": true})],
         );
-        assert!(
-            parse(r#"{"a": "1", "b": "2"}"#)
-                .unwrap_err()
-                .to_string()
-                .contains("exactly one key")
+        let tagger = ok.expect("valid tagger");
+        assert_eq!(tagger.id, "tagger:missing-test");
+        assert_eq!(tagger.phase, "tag");
+        assert_eq!(tagger.then.action_type, "tag");
+        assert_eq!(tagger.then.params, vec!["missing-test"]);
+
+        let err = SourceRule::synthetic_tagger("t", &[serde_json::json!({"p": 5})])
+            .expect_err("malformed when must be rejected");
+        // The legacy Display wording ("rules file at …") is what consumers
+        // stringify verbatim into their own config-error types.
+        assert_eq!(
+            err.to_string(),
+            "rules file at tagger:t could not be expanded: predicate value must be string, array, or bool; got 5"
         );
+        assert!(matches!(&err, RulesFileError::Unfold { path, .. } if path == "tagger:t"));
+        assert_eq!(err.path(), Some("tagger:t"));
     }
 
+    /// The wrapper is a pure delegate: for the same JSON it must parse and
+    /// serialize exactly like the governance `SourceRule`, field for field
+    /// (source-only `binds` included), and reject the same input with the
+    /// same message — the MCP crate's public serde surface must not drift
+    /// from the shared core.
     #[test]
-    fn when_clause_deserialize_rejects_bad_arg_types() {
-        let err = parse(r#"{"p": 5}"#).unwrap_err();
-        assert!(err.to_string().contains("string, array, or bool"), "{err}");
-        let err = parse(r#"{"p": {"x": 1}}"#).unwrap_err();
-        assert!(err.to_string().contains("string, array, or bool"), "{err}");
-        let err = parse(r#"{"p": ["ok", 1]}"#).unwrap_err();
-        assert!(err.to_string().contains("must contain strings"), "{err}");
-        let err = parse(r#"{"p": null}"#).unwrap_err();
-        assert!(err.to_string().contains("string, array, or bool"), "{err}");
-    }
+    fn source_rule_wrapper_serde_matches_governance_exactly() {
+        let json = r#"{
+            "id": "r1", "phase": "post", "priority": 7,
+            "silent": true, "audit": false, "doc_excepted": true, "binds": true,
+            "when": [ { "or": [ { "file_path_matches": "src" },
+                                { "file_extension_is": ".rs" } ] } ],
+            "then": { "warn": "legacy" }
+        }"#;
+        let wrapped: SourceRule = serde_json::from_str(json).unwrap();
+        let gov: GovSourceRule = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            serde_json::to_value(&wrapped).unwrap(),
+            serde_json::to_value(&gov).unwrap()
+        );
 
-    #[test]
-    fn when_clause_deserialize_rejects_bad_or_shapes() {
-        let err = parse(r#"{"or": "not-an-array"}"#).unwrap_err();
-        assert!(err.to_string().contains("array of clauses"), "{err}");
-        // Error inside a nested alternative surfaces through the outer error.
-        let err = parse(r#"{"or": [{"a": "1"}, 5]}"#).unwrap_err();
-        assert!(err.to_string().contains("JSON object"), "{err}");
-    }
+        // Every public field crosses the From conversions unchanged,
+        // including the source-only `binds` flag flat rules cannot carry.
+        assert_eq!(wrapped.binds, Some(true));
+        assert_eq!(wrapped.silent, Some(true));
+        assert_eq!(wrapped.audit, Some(false));
+        assert_eq!(wrapped.doc_excepted, Some(true));
+        let back = GovSourceRule::from(wrapped);
+        assert_eq!(back.binds, gov.binds);
+        assert_eq!(back.phase, gov.phase);
+        assert_eq!(back.priority, gov.priority);
+        assert_eq!(
+            serde_json::to_value(&back).unwrap(),
+            serde_json::to_value(&gov).unwrap()
+        );
 
-    #[test]
-    fn when_clause_deserialize_malformed_json_is_an_error() {
-        assert!(parse(r#"{"a": "#).is_err());
-        assert!(parse("").is_err());
-    }
-
-    #[test]
-    fn when_clause_deserialize_round_trips_through_serialize() {
-        for src in [
-            r#"{"a":"1"}"#,
-            r#"{"b":["x","y"]}"#,
-            r#"{"c":true}"#,
-            r#"{"__script__":"x > 1"}"#,
-            r#"{"or":[{"a":"1"},{"or":[{"b":true},{"__script__":"y"}]}]}"#,
-        ] {
-            let clause = parse(src).expect("parse");
-            let out = serde_json::to_string(&clause).expect("serialize");
-            let back = parse(&out).expect("reparse");
-            let again = serde_json::to_string(&back).expect("reserialize");
-            assert_eq!(out, again, "round trip unstable for {src}");
-            let v1: serde_json::Value = serde_json::from_str(src).unwrap();
-            let v2: serde_json::Value = serde_json::from_str(&out).unwrap();
-            assert_eq!(v1, v2, "semantic drift for {src}");
-        }
+        // Unknown keys fail identically on both paths (shared deserializer).
+        let bad =
+            r#"{"id":"r1","phase":"pre","priority":1,"when":[],"then":{"block":"x"},"bogus":1}"#;
+        let wrap_err = serde_json::from_str::<SourceRule>(bad)
+            .unwrap_err()
+            .to_string();
+        let gov_err = serde_json::from_str::<GovSourceRule>(bad)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(wrap_err, gov_err);
+        assert!(wrap_err.contains("unknown key `bogus`"), "{wrap_err}");
     }
 }
