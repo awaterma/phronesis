@@ -12,13 +12,14 @@ use phronesis_governance::evaluation::{
 };
 use phronesis_governance::{CompiledPolicy, Phase, Selection, parse};
 
+// Syntax policies use structural facts; TODO is intentionally textual.
 const POLICY: &str = r#"{
     "rules": [
         {
             "id": "no-unwrap",
             "phase": "pre",
-            "when": [{"new_content_contains": ".unwrap("}],
-            "then": {"block": "unwrap() is not allowed in production sources"}
+            "when": [{"rust_governed_invocation": ["?file", "?fn", "unwrap"]}],
+            "then": {"block": "unwrap() is not allowed in governed Rust code"}
         },
         {
             "id": "flag-todo",
@@ -40,6 +41,22 @@ fn compiled() -> CompiledPolicy {
     CompiledPolicy::compile(parsed.file.rules).unwrap()
 }
 
+// The host supplies this AST-derived fact shape; the governance core does
+// not parse Rust. A real extractor omits comments, strings, and test code.
+fn invocation_fact(id: &str, invocation: &str) -> Fact {
+    Fact {
+        id: id.to_string(),
+        predicate: "rust_governed_invocation".to_string(),
+        args: vec![
+            "src/lib.rs".to_string(),
+            "process".to_string(),
+            invocation.to_string(),
+        ],
+        timestamp: 0,
+        source: Some("consumer-flow".to_string()),
+    }
+}
+
 fn fact(id: &str, predicate: &str, arg: &str) -> Fact {
     Fact {
         id: id.to_string(),
@@ -58,10 +75,14 @@ fn snapshot(host: Vec<Fact>) -> FactSnapshot {
 }
 
 fn reserved_set() -> HashSet<String> {
-    ["new_content_contains", "file_extension_is"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+    [
+        "rust_governed_invocation",
+        "new_content_contains",
+        "file_extension_is",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 fn no_demote() -> BTreeSet<RuleId> {
@@ -87,7 +108,7 @@ async fn deny_scenario_blocks_with_provenance() {
     let decision = evaluate_pre(
         &policy,
         vec![
-            fact("fact-unwrap", "new_content_contains", ".unwrap("),
+            invocation_fact("fact-unwrap", "unwrap"),
             fact("fact-rust", "file_extension_is", "rs"),
         ],
     )
@@ -95,7 +116,7 @@ async fn deny_scenario_blocks_with_provenance() {
     assert_eq!(decision.verdict, Verdict::Deny);
     assert_eq!(
         decision.block_messages(),
-        vec!["unwrap() is not allowed in production sources"]
+        vec!["unwrap() is not allowed in governed Rust code"]
     );
     let (reason, consequence) = decision.iter_reasons().next().unwrap();
     assert_eq!(reason.index, 0);
@@ -117,6 +138,21 @@ async fn allow_scenario_has_no_reasons() {
     assert!(decision.block_messages().is_empty());
     assert!(decision.warning_messages().is_empty());
     assert!(decision.reasons.is_empty());
+}
+
+#[tokio::test]
+async fn unwrap_rule_requires_a_structural_unwrap_fact() {
+    let policy = compiled();
+    // A lexical hit could describe a comment or string. It is not evidence
+    // of a Rust call, and a different structural invocation is not unwrap.
+    for host in [
+        vec![fact("text-only", "new_content_contains", ".unwrap(")],
+        vec![invocation_fact("other-call", "expect_empty")],
+    ] {
+        let decision = evaluate_pre(&policy, host).await;
+        assert_eq!(decision.verdict, Verdict::Allow);
+        assert!(decision.reasons.is_empty());
+    }
 }
 
 #[tokio::test]
@@ -158,11 +194,7 @@ async fn demote_scenario_downgrades_exact_rule_only() {
     let decision = evaluate(
         &policy,
         Selection::Hook(Phase::Pre),
-        &snapshot(vec![fact(
-            "fact-unwrap",
-            "new_content_contains",
-            ".unwrap(",
-        )]),
+        &snapshot(vec![invocation_fact("fact-unwrap", "unwrap")]),
         &reserved_set(),
         &demote,
         builtin_evaluator(),
@@ -186,11 +218,7 @@ async fn demote_scenario_downgrades_exact_rule_only() {
 #[tokio::test]
 async fn evaluations_are_isolated_and_rejections_leak_nothing() {
     let policy = compiled();
-    let deny = evaluate_pre(
-        &policy,
-        vec![fact("fact-unwrap", "new_content_contains", ".unwrap(")],
-    )
-    .await;
+    let deny = evaluate_pre(&policy, vec![invocation_fact("fact-unwrap", "unwrap")]).await;
     assert_eq!(deny.verdict, Verdict::Deny);
 
     let again = evaluate_pre(&policy, vec![fact("fact-rust", "file_extension_is", "rs")]).await;
@@ -201,7 +229,7 @@ async fn evaluations_are_isolated_and_rejections_leak_nothing() {
         Selection::Hook(Phase::Pre),
         &FactSnapshot {
             host: vec![],
-            extensions: vec![fact("ext-1", "new_content_contains", ".unwrap(")],
+            extensions: vec![invocation_fact("ext-1", "unwrap")],
         },
         &reserved_set(),
         &no_demote(),
@@ -212,7 +240,7 @@ async fn evaluations_are_isolated_and_rejections_leak_nothing() {
         rejected.unwrap_err(),
         EvaluationError::ReservedExtensionPredicate {
             fact_id: "ext-1".to_string(),
-            predicate: "new_content_contains".to_string(),
+            predicate: "rust_governed_invocation".to_string(),
         }
     );
 

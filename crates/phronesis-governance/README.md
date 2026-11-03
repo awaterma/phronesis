@@ -45,3 +45,8 @@ sh examples/governance-consumer/run.sh
 ```
 
 The coding example demonstrates decisions, provenance, demotion, reservations, and snapshot isolation. The expense-approval workflow demonstrates a non-software domain with explicit input paths and reserved predicates. The [consumer acceptance script](../../examples/governance-consumer/README.md) packages and extracts both Rust crates, builds an external consumer against those archives, and runs the expense workflow from an empty working directory. It performs no publication. Local dependency patches let the unpublished matching engine archive resolve offline; this is not evidence of a crates.io release.
+
+The coding walkthrough uses host-supplied `rust_governed_invocation` facts
+for the unwrap rule. Its hand-built facts illustrate the Rust extractor
+contract; the governance core does not parse source. The TODO rule remains
+textual because it governs a literal marker, not Rust syntax.

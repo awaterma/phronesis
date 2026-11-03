@@ -13,13 +13,14 @@ use phronesis_governance::evaluation::{
 };
 use phronesis_governance::{CompiledPolicy, Phase, Selection, parse};
 
+// Syntax policies use structural facts; TODO is intentionally textual.
 const POLICY: &str = r#"{
     "rules": [
         {
             "id": "no-unwrap",
             "phase": "pre",
-            "when": [{"new_content_contains": ".unwrap("}],
-            "then": {"block": "unwrap() is not allowed in production sources"}
+            "when": [{"rust_governed_invocation": ["?file", "?fn", "unwrap"]}],
+            "then": {"block": "unwrap() is not allowed in governed Rust code"}
         },
         {
             "id": "flag-todo",
@@ -36,6 +37,22 @@ const POLICY: &str = r#"{
     ]
 }"#;
 
+// The host supplies this AST-derived fact shape; the governance core does
+// not parse Rust. A real extractor omits comments, strings, and test code.
+fn invocation_fact(id: &str, invocation: &str) -> Fact {
+    Fact {
+        id: id.to_string(),
+        predicate: "rust_governed_invocation".to_string(),
+        args: vec![
+            "src/lib.rs".to_string(),
+            "process".to_string(),
+            invocation.to_string(),
+        ],
+        timestamp: 0,
+        source: Some("consumer-flow".to_string()),
+    }
+}
+
 fn fact(id: &str, predicate: &str, arg: &str) -> Fact {
     Fact {
         id: id.to_string(),
@@ -47,7 +64,7 @@ fn fact(id: &str, predicate: &str, arg: &str) -> Fact {
 }
 
 fn unwrap_fact() -> Fact {
-    fact("fact-unwrap", "new_content_contains", ".unwrap(")
+    invocation_fact("fact-unwrap", "unwrap")
 }
 
 fn todo_fact() -> Fact {
@@ -59,10 +76,14 @@ fn rust_file_fact() -> Fact {
 }
 
 fn reserved_set() -> HashSet<String> {
-    ["new_content_contains", "file_extension_is"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+    [
+        "rust_governed_invocation",
+        "new_content_contains",
+        "file_extension_is",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 fn snapshot(host: Vec<Fact>) -> FactSnapshot {
@@ -106,7 +127,7 @@ async fn main() {
     let reserved = reserved_set();
     let no_demote = BTreeSet::new();
 
-    println!("\n[deny] pre-hook sees unwrap() in new content");
+    println!("\n[deny] pre-hook receives a structural unwrap invocation");
     let deny = evaluate(
         &policy,
         Selection::Hook(Phase::Pre),
@@ -190,7 +211,7 @@ async fn main() {
         Selection::Hook(Phase::Pre),
         &FactSnapshot {
             host: vec![],
-            extensions: vec![fact("ext-1", "new_content_contains", ".unwrap(")],
+            extensions: vec![invocation_fact("ext-1", "unwrap")],
         },
         &reserved,
         &no_demote,
