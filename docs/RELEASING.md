@@ -11,7 +11,7 @@ operator guide.
    conventional-commit shaped — `feat:`, `fix:`, `chore:`, ...).
 2. **release-plz opens/updates a Release PR** proposing the next version
    (pre-1.0 house rule: any user-visible feature bumps MINOR —
-   `features_always_increment_minor = true`). All four crates share one
+   `features_always_increment_minor = true`). All five crates share one
    version (`version_group = "workspace"`).
 3. **A human reviews the Release PR** — this is the approval gate:
    - Hand-write the `CHANGELOG.md` entry (release-plz does not touch the
@@ -36,8 +36,10 @@ operator guide.
    being right.
 5. **Merging the Release PR** triggers the release job
    (`release_always = true`; ordinary pushes to `main` are harmless because
-   an unchanged workspace version is already present in the registry). CI then:
-   - publishes `phronesis`, `phronesis-rhai`, `phronesis-metrics`, and
+   existing crates at an unchanged workspace version are already present in
+   the registry; a new crate is an exception and needs the bootstrap below). CI then:
+   - publishes `phronesis`, `phronesis-governance`, `phronesis-rhai`,
+     `phronesis-metrics`, and
      `phronesis-mcp` to
      crates.io in dependency order via trusted publishing (OIDC — no
      `CARGO_REGISTRY_TOKEN`),
@@ -49,7 +51,7 @@ operator guide.
      reusable binary workflow verifies that the expected `phronesis-mcp` tag
      points at the release commit, then waits for its GitHub release before
      uploading, so ordinary pushes are no-ops and versions cannot diverge.
-6. **Verify against crates.io**, not the job status: check all four
+6. **Verify against crates.io**, not the job status: check all five
    crates show the new version. A green release job does NOT guarantee
    a complete publish (see "Partial publish" below).
 7. **Locally**, after each release: `cargo install --path
@@ -60,7 +62,7 @@ operator guide.
 Done by a human, once:
 
 1. **crates.io trusted publishing** — for EACH of `phronesis`,
-   `phronesis-rhai`, `phronesis-metrics`, and `phronesis-mcp`: crate page →
+   `phronesis-governance`, `phronesis-rhai`, `phronesis-metrics`, and `phronesis-mcp`: crate page →
    Settings → Trusted Publishing → Add GitHub:
    - owner: `awaterma`
    - repo: `phronesis`
@@ -95,7 +97,7 @@ before the OIDC-only release workflow can publish it:
 
    ```bash
    CARGO_REGISTRY_TOKEN=<short-lived-token> \
-     cargo publish --locked -p phronesis-metrics
+     cargo publish --locked -p phronesis-governance
    ```
 
    Pass the token only to that process; do not persist it with `cargo login`.
@@ -107,21 +109,34 @@ before the OIDC-only release workflow can publish it:
 
 The first bootstrap publishes the workspace's current version of the new
 crate. The next release-plz Release PR advances the shared version group and
-publishes `phronesis-mcp` with its new optional dependency after
-`phronesis-metrics` is available in the registry.
+publishes dependent packages after the new crate is available in the registry.
+For example, `phronesis-governance` was bootstrapped at 0.40.0 before the
+shared 0.41.0 release; the MCP dependency on governance is mandatory.
+
+Before merging a new crate, add its explicit `[[package]]` entry with
+`version_group = "workspace"` to `release-plz.toml`, update the crate lists
+in this guide, and plan the first-publish step. The OIDC-only release job
+can fail on that initial merge until manual publication and trusted-publisher
+registration are complete. `scripts/verify-crates-io.py` discovers all
+publishable workspace members automatically; no hard-coded list needs editing.
+
+If a feature was squash-merged with a non-conventional title, release-plz may
+propose a patch release instead of the house-rule minor release. Correct the
+release PR or replace it before merging, updating the workspace version,
+internal dependency requirements, Cargo-generated lockfile, and changelog
+together. Do not merge both the superseded and replacement release PRs.
 
 ## Troubleshooting
 
 - **Phantom release PR** (a Release PR appears with no real changes):
   two known causes here.
-  - *Lockfile drift* (verified in this repo): `Cargo.lock` is not
-    committed, but published binary crates embed one. When any
-    transitive dependency publishes a new version, packaging
-    `phronesis-mcp` locally produces a `Cargo.lock` that differs from
-    the one inside the published tarball, so release-plz sees the crate
-    as "changed" and proposes a patch bump for the whole version group.
-    Fix: commit `Cargo.lock` (recommended for a repo that ships a
-    binary), or accept the occasional dependency-only patch release.
+  - *Lockfile drift* (observed before this repo tracked `Cargo.lock`):
+    published binary crates embed a lockfile. A newly resolved transitive
+    dependency could make local packaging differ from the published tarball,
+    so release-plz proposed a patch bump for the whole version group.
+    `Cargo.lock` is now committed; preserve it and review intentional
+    dependency updates rather than regenerating unrelated resolutions during
+    a release.
   - release-plz [issue #1181](https://github.com/release-plz/release-plz/issues/1181)
     — workspace-dependency loop can make it think internal crates
     changed. Close the PR; if it recurs, check path-dependency version
@@ -154,7 +169,7 @@ publishes `phronesis-mcp` with its new optional dependency after
      sha that run checked out. Without the tag, release-plz checks
      crates.io per crate, skips the ones already published, publishes
      the remainder via OIDC, and recreates the tag.
-  3. Confirm all four crates show the new version on crates.io. The
+  3. Confirm all five crates show the new version on crates.io. The
      log wording distinguishes the two paths: `already published` is a
      registry check; `Already published - Tag vX.Y.Z already exists` is
      the tag shortcut that hides the bug.

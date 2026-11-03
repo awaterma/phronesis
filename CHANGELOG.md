@@ -6,6 +6,48 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-11-03
+
+### Added
+
+- **Embeddable governance core** (`phronesis-governance`): strict v1/v2
+  policy parsing and compilation, OR source metadata, ordered layer
+  composition, isolated fact-snapshot evaluation, capsule validation, and
+  structured allow/warn/deny decisions with provenance and diagnostics.
+  Hosts supply facts, reserved predicates, clocks, and evaluators; the core
+  has no MCP, repository-discovery, filesystem, or mandatory Rhai dependency.
+- Runnable coding and expense-approval examples, plus an external packaged
+  consumer check. The coding policy uses structural Rust invocation facts
+  for unwrap detection and textual matching only for the TODO marker.
+- A 23-case CLI/MCP differential runner and characterization tests for
+  existing hook, parser, persistence, and capsule behavior.
+
+### Changed
+
+- MCP adapters use the shared governance policy, composition, capsule, and
+  decision helpers while retaining host-owned I/O, persistence, lifecycle,
+  error rendering, and persistent server sessions.
+- All five publishable crates are explicitly members of the shared release
+  version group.
+
+### Fixed
+
+- Differential checks capture and compare MCP stderr and natural exit status,
+  drain output during calls and shutdown, and enforce bounded response reads
+  with a single deadline across unrelated notifications.
+- Missing disk files cannot satisfy a positive content assertion when a
+  negative assertion is also present.
+
+### Migration
+
+- Embedders can depend on `phronesis-governance = "0.41.0"`; see its embedding
+  guide for caller-owned facts, explicit reservations, and evaluation errors.
+  The CLI/MCP compatibility cases pass, but finite differential coverage is
+  not proof of equivalence for every input. No policy-file migration is
+  required by this extraction.
+
+## [0.40.0] - 2026-10-29
+
 ### Added
 
 - **Go support** (`phr-mcp init --packs go`), built as a bundled language
