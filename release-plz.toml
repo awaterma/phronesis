@@ -8,10 +8,11 @@
 # bump and was then skipped with "current commit is not from a release PR",
 # exiting green having published nothing.
 #
-# `true` is not less safe here: versions only change through a Release PR, so
-# on an ordinary push the workspace version already matches the registry and
-# there is nothing to publish. What it removes is the dependence on who
-# authored the PR. `scripts/verify-crates-io.py` enforces the invariant.
+# Existing packages normally already match the registry on an ordinary push.
+# A new workspace package is an exception: it can require publication even
+# without a version bump. Bootstrap its first version and trusted publisher
+# as described in docs/RELEASING.md. This setting removes dependence on who
+# authored a Release PR. `scripts/verify-crates-io.py` checks registry state.
 release_always = true
 
 # CHANGELOG.md is hand-curated (Keep a Changelog with Migration sections);
@@ -29,8 +30,8 @@ changelog_update = false
 # casualty every time: v0.20.1, v0.21.0, v0.22.1, v0.24.0.
 #
 # Per-package tags make that check mean what it says. This does NOT split the
-# version: all four crates still share one version through `version_group`
-# below, because `phronesis-mcp` depends on the other three and skew would be
+# version: all five crates still share one version through `version_group`
+# below, because `phronesis-mcp` depends on the other four and skew would be
 # pure bookkeeping. It splits only the *tag*, which was never a version
 # statement — it was a per-package "did this ship" marker wearing a
 # version-shaped name.
@@ -48,7 +49,7 @@ semver_check = true
 dependencies_update = false
 pr_labels = ["release"]
 
-# Unified version across all three crates (version.workspace = true).
+# Unified version across all five crates (version.workspace = true).
 [[package]]
 name = "phronesis"
 version_group = "workspace"
@@ -63,4 +64,8 @@ version_group = "workspace"
 
 [[package]]
 name = "phronesis-mcp"
+version_group = "workspace"
+
+[[package]]
+name = "phronesis-governance"
 version_group = "workspace"
