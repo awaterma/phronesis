@@ -403,8 +403,16 @@ impl ReteNetwork {
             return Ok(None);
         };
         let mut current = first.clone();
+        let terminal_index = state_ids.len().saturating_sub(2);
         for (index, next) in state_ids[1..].iter().enumerate() {
-            let join = self.create_join(&current, next)?;
+            // Only the terminal join is per rule (isolated when the shared
+            // join for the pattern already belongs to another rule); every
+            // earlier join stays shared between rules.
+            let join = if index == terminal_index {
+                self.create_terminal_join(&current, next)?
+            } else {
+                self.create_join(&current, next)?
+            };
             self.connect_alpha_to_join(&current, next, &join, index == 0)?;
             current = join;
         }
@@ -417,6 +425,18 @@ impl ReteNetwork {
             .lock()
             .map_err(|_| ReteError::poisoned("beta_network"))?;
         Ok(beta.get_or_create_join(
+            left.to_string(),
+            right.to_string(),
+            "default_join".to_string(),
+        ))
+    }
+
+    fn create_terminal_join(&self, left: &str, right: &str) -> Result<String, ReteError> {
+        let mut beta = self
+            .beta_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("beta_network"))?;
+        Ok(beta.get_or_create_isolated_terminal(
             left.to_string(),
             right.to_string(),
             "default_join".to_string(),
@@ -1226,6 +1246,15 @@ impl ReteNetwork {
             .lock()
             .map_err(|_| ReteError::poisoned("fired_activations"))?
             .retain(|key| key.rule_id != rule_id);
+        // The beta terminal this rule claimed keeps its p-state marker after
+        // removal; a rule re-added under the same id would inherit the stale
+        // association (old pattern, old salience) through activation lookup.
+        // Retire the marker, leaving shared memories and surviving rules'
+        // terminals untouched.
+        self.beta_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("beta_network"))?
+            .clear_p_states_for_rule(rule_id);
         Ok(())
     }
 }

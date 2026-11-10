@@ -671,7 +671,7 @@ crates/phronesis-mcp/tests/     # MCP server tests
 ├── unit_cli_integration.rs     # `phr-mcp unit` start/end/show, --spec and --bug
 ├── save_rules_integration.rs   # Rule persistence
 ├── section_context_integration.rs # Section context flow
-├── values_integration.rs       # AST predicates
+├── syntax_integration.rs       # AST predicates
 ├── extraction.rs               # Markdown extraction
 └── security_tests.rs           # Security edge cases
 ```
