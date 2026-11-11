@@ -28,6 +28,12 @@ def response(url):
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_only_observed_code_search_rate_limits_are_nonfatal(self):
+        limited = {"errors": [{"source": 'github:code:"phr-mcp"', "http_status": 429}]}
+        self.assertEqual(snapshot.exit_status(limited), 0)
+        for source, status in [("crate:phronesis", 429), ('github:code:"phr-mcp"', 403), ("github:repository", 503)]:
+            self.assertEqual(snapshot.exit_status({"errors": [{"source": source, "http_status": status}]}), 1)
+
     def test_rate_limit_retry_respects_delay_and_stops(self):
         errors = [urllib.error.HTTPError("https://api.github.com/search/code", 429,
                   "limited", {"Retry-After": "2"}, None) for _ in range(3)]

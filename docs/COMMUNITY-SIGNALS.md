@@ -35,8 +35,10 @@ the displayed code-search total counts public results returned, not all matches.
 comments nor contacts people. Source URLs and timestamps accompany the data.
 
 Transient HTTP errors receive up to two bounded retries (respecting numeric
-Retry-After values up to 60 seconds). Source failures produce a **partial** artifact and a failed workflow so missing
-information is visible. Authentication restrictions, API outages and rate limits
+Retry-After values up to 60 seconds). Source failures produce a **partial** artifact. Persistent code-search HTTP429
+rate limits are nonfatal and emit a workflow warning with manual search links;
+this was observed on hosted runners even after retries. All other failures fail
+the workflow. A green job with a partial report is not complete search coverage. Authentication restrictions, API outages and rate limits
 are unknowns, not zero adoption. Code search may be unavailable with a particular
 GitHub token; the other snapshots are still retained. Results are capped at 100
 per query/source and explicitly marked when truncated or incomplete; the readable

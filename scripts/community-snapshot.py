@@ -123,11 +123,23 @@ def summary(snapshot):
         if data.get("truncated") or data.get("possibly_truncated") or data.get("incomplete"):
             lines.append("**Partial source results:** pagination cap or API search limit reached.")
         lines.append("")
+    lines.extend(["## Manual code-search fallback", ""])
+    for term in TERMS:
+        url = "https://github.com/search?" + urllib.parse.urlencode({"q": term + " -user:awaterma", "type": "code"})
+        lines.append(f"- [{html.escape(term)}]({url})")
+    lines.append("")
     if snapshot["errors"]:
         lines.extend(["## Unavailable sources", "", "These are unknown, not zero results.", ""])
         for error in snapshot["errors"]:
             lines.append(f"- {html.escape(error['source'])}: {error['error']} (HTTP {error['http_status']})")
     return "\n".join(lines) + "\n"
+
+
+def exit_status(snapshot):
+    # Observed hosted-runner limitation: code-search 429s persist after retries.
+    # Preserve partial status and emit a warning; every other failure stays fatal.
+    return int(any(not (error["source"].startswith("github:code:") and
+                        error["http_status"] == 429) for error in snapshot["errors"]))
 
 
 def main():
@@ -138,7 +150,9 @@ def main():
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "snapshot.json").write_text(json.dumps(snapshot, indent=2) + "\n")
     (args.out_dir / "summary.md").write_text(summary(snapshot))
-    return 1 if snapshot["errors"] else 0
+    if snapshot["errors"]:
+        print("::warning::Public signals are partial; inspect summary.md for unavailable sources. Missing results are not zero.")
+    return exit_status(snapshot)
 
 
 if __name__ == "__main__":
