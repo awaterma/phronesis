@@ -6,6 +6,71 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.41.1]
+
+This patch release fixes incremental RETE matching and Rust unsafe-code auditing.
+It adds no new public APIs or rule formats. All five workspace crates advance
+from 0.41.0 to 0.41.1 together.
+
+### Fixed
+
+- **Immediate multi-condition rule activation ([#159](https://github.com/awaterma/phronesis/issues/159)).**
+  Completed beta matches now reach the agenda immediately after fact assertion,
+  including when the final arriving fact completes an earlier join. Previously,
+  three-or-more-condition rules could miss activation until a full rescan.
+  Every produced token is queued with its producing state, and consumers receive
+  it on their declared left or right input; beta states feeding right inputs no
+  longer get routed incorrectly through the left side.
+- **Rules sharing identical conditions.** Each rule retains its own production
+  terminal and salience instead of overwriting another rule's terminal marker.
+  Intermediate joins remain shared, and the existing low-level terminal setter
+  retains its single-marker, last-mark-wins behavior.
+- **Rules added after partial matches already exist.** New terminal joins retain
+  existing prefix matches, allowing a subsequently asserted final condition to
+  complete a longer rule without reasserting its earlier facts.
+- **Rule removal and replacement.** Removing a rule clears its beta production
+  markers while preserving shared memories and surviving rules. Reusing the same
+  rule ID no longer lets the old pattern activate the replacement with obsolete
+  conditions or salience.
+- **Unsafe-code safety documentation.** Rust auditing now associates actual
+  syntax-tree comment nodes with the relevant unsafe block. Adjacent multiline
+  line comments and block comments are recognized; markers inside strings or raw
+  strings, unrelated enclosing module comments, and comments belonging to outer
+  scopes cannot incorrectly justify an unsafe block. Existing adjacent and
+  direct-body comment behavior is retained.
+
+### Tests and maintenance
+
+- Added 25 beta-propagation regressions covering all six three-condition and all
+  24 four-condition fact-arrival permutations, one/two-condition controls,
+  inconsistent bindings, multiple matches, shared joins and terminals, right-input
+  beta consumers, and retract/reassert behavior. Assertions inspect the immediate
+  agenda before rescans can conceal a propagation failure.
+- Added six rule-replacement regressions covering changed predicates and salience,
+  surviving shared rules, existing prefixes, and repeated removal/re-addition.
+- Expanded structural unsafe-comment regressions and CLI hook probes, including
+  string markers and unrelated module, closure, and outer-unsafe scopes.
+- Corrected shell quoting in language-pack recovery test fixtures for executable
+  and project paths containing spaces. Tests now exercise a spaced project root;
+  production recovery policy and negative security assertions are unchanged.
+- Updated the known-bug registry with named passing regressions for the RETE and
+  audit fixes, and corrected the existing audit-path-exclusion test reference.
+- Corrected the project guide's stale `values_integration.rs` reference to
+  `syntax_integration.rs`; added a detailed RETE/audit validation and limitations
+  report under `docs/reports/rete-beta-and-audit-validation.md`.
+- Pinned the Linux Swift coverage CI job to Ubuntu 24.04 and aligned its setup
+  condition because the Swift setup action rejects Ubuntu 26.04 selected by
+  `ubuntu-latest`. Swift 6.1, macOS coverage, and the other runner jobs are unchanged.
+
+### Compatibility
+
+- No configuration or policy-file migration is required. Public APIs, rule
+  formats, activation deduplication, and rule salience semantics are preserved.
+- The audit still has advisory findings and skips two binding-dependent script
+  guards; this release does not claim a clean advisory audit. Long-running
+  rule-churn memory growth was not benchmarked. See the validation report for
+  scope, executed checks, and remaining limitations.
+
 ## [0.41.0] - 2026-11-03
 
 ### Added
