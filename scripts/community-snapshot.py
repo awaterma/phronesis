@@ -5,6 +5,7 @@ import datetime
 import html
 import json
 import os
+import time
 from pathlib import Path
 import urllib.error
 import urllib.parse
@@ -38,8 +39,21 @@ def fetch(url):
         if token:
             headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code not in (429, 502, 503, 504) or attempt == 2:
+                raise
+            try:
+                delay = int(error.headers.get("Retry-After", "30"))
+            except ValueError:
+                delay = 30
+            if delay > 60:
+                raise  # Do not retry earlier than requested or stall the whole run.
+            error.close()
+            time.sleep(max(1, delay))
 
 
 def collect(get=fetch):

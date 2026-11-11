@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 import urllib.error
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("snapshot", Path(__file__).with_name("community-snapshot.py"))
 snapshot = importlib.util.module_from_spec(spec)
@@ -27,6 +28,17 @@ def response(url):
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_rate_limit_retry_respects_delay_and_stops(self):
+        errors = [urllib.error.HTTPError("https://api.github.com/search/code", 429,
+                  "limited", {"Retry-After": "2"}, None) for _ in range(3)]
+        with patch.object(snapshot.urllib.request, "urlopen", side_effect=errors) as request, \
+             patch.object(snapshot.time, "sleep") as sleep:
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                snapshot.fetch("https://api.github.com/search/code")
+            raised.exception.close()
+            self.assertEqual(request.call_count, 3)
+            self.assertEqual([x.args for x in sleep.call_args_list], [(2,), (2,)])
+
     def test_partial_api_is_unknown_not_zero_and_other_sources_survive(self):
         def get(url):
             if "search/code" in url:

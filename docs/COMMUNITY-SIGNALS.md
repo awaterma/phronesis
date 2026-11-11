@@ -34,7 +34,8 @@ results are retained only when GitHub explicitly marks their repository public;
 the displayed code-search total counts public results returned, not all matches. It neither posts
 comments nor contacts people. Source URLs and timestamps accompany the data.
 
-Source failures produce a **partial** artifact and a failed workflow so missing
+Transient HTTP errors receive up to two bounded retries (respecting numeric
+Retry-After values up to 60 seconds). Source failures produce a **partial** artifact and a failed workflow so missing
 information is visible. Authentication restrictions, API outages and rate limits
 are unknowns, not zero adoption. Code search may be unavailable with a particular
 GitHub token; the other snapshots are still retained. Results are capped at 100
