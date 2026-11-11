@@ -112,7 +112,9 @@ jobs:
           - { runner: node, os: ubuntu-latest }
           - { runner: mvn, os: ubuntu-latest }
           - { runner: gradle, os: ubuntu-latest }
-          - { runner: swift, os: ubuntu-latest }
+          # swift-actions/setup-swift v2 supports at most Ubuntu 24.04 and
+          # ubuntu-latest is now 26.04, so pin the Linux Swift row.
+          - { runner: swift, os: ubuntu-24.04 }
           - { runner: swift, os: macos-latest }
     steps:
       - uses: actions/checkout@v4
@@ -137,7 +139,7 @@ jobs:
         with:
           gradle-version: "8.14.3"
       - uses: swift-actions/setup-swift@v2
-        if: matrix.runner == 'swift' && matrix.os == 'ubuntu-latest'
+        if: matrix.runner == 'swift' && matrix.os == 'ubuntu-24.04'
         with:
           swift-version: "6.1"
       - run: python3 -m pip install pytest==8.3.5 coverage==7.8.0

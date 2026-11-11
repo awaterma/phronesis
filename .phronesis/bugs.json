@@ -1,7 +1,44 @@
 [
   {
     "bug_id": "52",
-    "test": "audit::tests::run_scopes_ast_rule_with_builtin_script_path_exclusion",
-    "status": "open"
+    "test": "audit::tests::script_tests::run_scopes_ast_rule_with_builtin_script_path_exclusion",
+    "status": "fixed",
+    "title": "Audit path exclusions must remain scoped to each scanned file"
+  },
+  {
+    "bug_id": "159",
+    "test": "three_condition_rule_activates_immediately_on_every_arrival_order",
+    "status": "fixed",
+    "title": "Beta propagation must activate terminals immediately in every fact arrival order"
+  },
+  {
+    "bug_id": "local-unsafe-multiline-comment",
+    "test": "syntax::rust::hazards::tests::multiline_safety_comment_above_the_block_is_accepted",
+    "status": "fixed",
+    "title": "Unsafe audit must recognize adjacent multiline safety comments"
+  },
+  {
+    "bug_id": "local-shared-beta-terminal",
+    "test": "identical_condition_rules_sharing_terminal_activate_immediately_with_own_salience",
+    "status": "fixed",
+    "title": "Rules with identical conditions must each activate with their own salience"
+  },
+  {
+    "bug_id": "local-replaced-beta-rule",
+    "test": "readded_rule_with_changed_predicates_ignores_old_pattern_facts",
+    "status": "fixed",
+    "title": "Removed beta terminals must not activate a replacement rule with old predicates"
+  },
+  {
+    "bug_id": "local-preloaded-beta-prefix",
+    "test": "longer_rule_added_after_prefix_match_activates_when_final_condition_arrives",
+    "status": "fixed",
+    "title": "New longer rules must retain pre-existing prefix matches"
+  },
+  {
+    "bug_id": "local-unsafe-string-marker",
+    "test": "syntax::rust::hazards::tests::a_marker_inside_a_string_or_raw_string_does_not_excuse_the_block",
+    "status": "fixed",
+    "title": "String literals must not count as unsafe safety documentation"
   }
 ]

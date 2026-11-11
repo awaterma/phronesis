@@ -20,6 +20,22 @@ fn project(root: &Path) -> String {
     root.canonicalize().unwrap().display().to_string()
 }
 
+/// A word of a fixture command, spelled the way the printed repair command
+/// spells paths: unquoted when every character is plain to a POSIX shell,
+/// single-quoted otherwise (the shell expands nothing inside single quotes).
+/// Fixture inputs here are the hook binary and tempdir paths, which never
+/// carry the single quotes or control characters production refuses outright.
+fn shell_word(word: &str) -> String {
+    let plain = word
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_./=:+@,".contains(c));
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{word}'")
+    }
+}
+
 fn manifest(id: &str, ext: &str) -> Value {
     json!({
         "schema_version": 1,
@@ -44,9 +60,14 @@ fn write(dir: &Path, rel: &str, bytes: &[u8]) {
     fs::write(path, bytes).unwrap();
 }
 
-/// A governed project with one installed pack `demo_a`.
+/// A governed project with one installed pack `demo_a`. The project root
+/// deliberately contains a space, so root-path quoting in the fixtures is
+/// exercised even when the executable path is simple.
 fn project_with_pack() -> (tempfile::TempDir, tempfile::TempDir) {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::Builder::new()
+        .prefix("my project ")
+        .tempdir()
+        .unwrap();
     write(root.path(), ".phronesis/rules.json", br#"{"rules": []}"#);
     write(root.path(), "README.md", b"hello\n");
     let src = tempfile::tempdir().unwrap();
@@ -142,7 +163,11 @@ fn a_broken_installed_pack_names_itself_and_admits_only_the_pack_cli() {
     assert_eq!(
         pre_bash(
             root,
-            &format!("{BIN} pack remove victim --path {}", other.path().display())
+            &format!(
+                "{} pack remove victim --path {}",
+                shell_word(BIN),
+                shell_word(&other.path().display().to_string())
+            )
         )
         .0,
         2
@@ -150,14 +175,25 @@ fn a_broken_installed_pack_names_itself_and_admits_only_the_pack_cli() {
 
     // The repair: this binary's pack CLI alone, allowed with a warning.
     // Relative forms resolve in the shell, not the hook: refused.
-    assert_eq!(pre_bash(root, &format!("{BIN} pack remove demo_a")).0, 2);
     assert_eq!(
-        pre_bash(root, &format!("{BIN} pack remove demo_a --path .")).0,
+        pre_bash(root, &format!("{} pack remove demo_a", shell_word(BIN))).0,
+        2
+    );
+    assert_eq!(
+        pre_bash(
+            root,
+            &format!("{} pack remove demo_a --path .", shell_word(BIN))
+        )
+        .0,
         2
     );
     let (code, err) = pre_bash(
         root,
-        &format!("{BIN} pack remove demo_a --path {}", project(root)),
+        &format!(
+            "{} pack remove demo_a --path {}",
+            shell_word(BIN),
+            shell_word(&project(root))
+        ),
     );
     assert_eq!(code, if cfg!(unix) { 1 } else { 2 }, "{err}");
     assert!(
@@ -168,7 +204,10 @@ fn a_broken_installed_pack_names_itself_and_admits_only_the_pack_cli() {
         }),
         "{err}"
     );
-    assert_eq!(pre_bash(root, &format!("{BIN} pack list --json")).0, 1);
+    assert_eq!(
+        pre_bash(root, &format!("{} pack list --json", shell_word(BIN))).0,
+        1
+    );
 
     // Unix can repair the pack; other platforms must refuse without changes.
     let (code, out, err) = phr(root, &["pack", "remove", "demo_a"], None);
@@ -290,15 +329,16 @@ fn codex_admits_only_the_pack_cli_while_a_pack_is_broken() {
         "{denied}"
     );
     let allowed = codex(&format!(
-        "{BIN} pack remove demo_a --path {}",
-        project(root)
+        "{} pack remove demo_a --path {}",
+        shell_word(BIN),
+        shell_word(&project(root))
     ));
     assert_eq!(
         allowed["hookSpecificOutput"]["permissionDecision"] == "deny",
         !cfg!(unix),
         "{allowed}"
     );
-    let diagnostics = codex(&format!("{BIN} pack list --json"));
+    let diagnostics = codex(&format!("{} pack list --json", shell_word(BIN)));
     assert_ne!(
         diagnostics["hookSpecificOutput"]["permissionDecision"], "deny",
         "{diagnostics}"

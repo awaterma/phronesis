@@ -104,7 +104,7 @@ impl BetaState {
         // Try to join with right memory and collect new tokens
         let mut new_tokens = Vec::new();
         for right_token in &self.right_memory {
-            if let Some(joined_token) = self.join_tokens(&token, right_token) {
+            if let Some(joined_token) = Self::join_tokens(&token, right_token) {
                 self.beta_memory.push(joined_token.clone());
                 new_tokens.push(joined_token);
             }
@@ -121,7 +121,7 @@ impl BetaState {
         // Try to join with left memory and collect new tokens
         let mut new_tokens = Vec::new();
         for left_token in &self.left_memory {
-            if let Some(joined_token) = self.join_tokens(left_token, &token) {
+            if let Some(joined_token) = Self::join_tokens(left_token, &token) {
                 self.beta_memory.push(joined_token.clone());
                 new_tokens.push(joined_token);
             }
@@ -130,7 +130,7 @@ impl BetaState {
     }
 
     /// Attempt to join two tokens based on variable bindings
-    fn join_tokens(&self, left: &Token, right: &Token) -> Option<Token> {
+    fn join_tokens(left: &Token, right: &Token) -> Option<Token> {
         // Try to merge the bindings from both tokens
         match left.bindings.merge(&right.bindings) {
             Ok(merged_bindings) => {
@@ -209,6 +209,26 @@ impl BetaNetwork {
         }
     }
 
+    /// Retire every p-state marker that belongs to a removed rule.
+    ///
+    /// Only the marker goes: the state's memories are shared prefix state
+    /// that surviving or future rules still consume, so they stay. Without
+    /// this, a rule re-added under the same id inherits the stale
+    /// association the next time a token flows through the old terminal —
+    /// activation lookup finds the current rule by id and fires it with the
+    /// removed generation's pattern and salience.
+    pub(crate) fn clear_p_states_for_rule(&mut self, rule_id: &str) {
+        for state in self.states.values_mut() {
+            if state
+                .p_state
+                .as_ref()
+                .is_some_and(|info| info.rule_id.as_str() == rule_id)
+            {
+                state.p_state = None;
+            }
+        }
+    }
+
     /// Add a join between two sources resulting in a beta state
     pub fn add_join(
         &mut self,
@@ -276,6 +296,88 @@ impl BetaNetwork {
         }
     }
 
+    /// Get or create the terminal join for a rule's complete condition chain.
+    ///
+    /// Intermediate joins stay shared through [`Self::get_or_create_join`];
+    /// the terminal is per rule. A fresh isolated state with the same inputs
+    /// is created when the shared join for the pattern already carries a
+    /// p-state (another rule's terminal), so each rule keeps its own
+    /// `p_state` — `mark_as_p_state` keeps its singular last-mark-wins
+    /// semantics and every terminal is marked by exactly one rule. A
+    /// pre-existing unclaimed join is another rule's intermediate adopted as
+    /// this rule's terminal and is returned untouched.
+    ///
+    /// A newly created terminal is seeded with what its inputs already
+    /// produced: left input from the upstream beta state's memory (or, when
+    /// the left source is an alpha state, from the shared terminal's left
+    /// memory), right input from the shared terminal's right memory, and the
+    /// joined tokens recomputed from those. Without this, a terminal created
+    /// after its inputs produced tokens would silently miss matches that
+    /// predate the rule's insertion.
+    pub(crate) fn get_or_create_isolated_terminal(
+        &mut self,
+        left_source: String,
+        right_source: String,
+        join_condition: String,
+    ) -> String {
+        let join_hash = format!("{}-{}-{}", left_source, right_source, join_condition);
+        let pattern_existed = self.join_index.contains_key(&join_hash);
+        let shared = self.get_or_create_join(
+            left_source.clone(),
+            right_source.clone(),
+            join_condition.clone(),
+        );
+        let shared_is_claimed = self
+            .states
+            .get(&shared)
+            .is_some_and(|state| state.p_state.is_some());
+        // A terminal is created fresh in two cases: the shared join is
+        // claimed by another rule's p-state (isolated per-rule terminal), or
+        // the pattern never existed (a new terminal whose inputs may already
+        // hold produced tokens). A pre-existing unclaimed join is another
+        // rule's intermediate being adopted as this rule's terminal; it
+        // already accumulated its memories, so it is returned untouched.
+        if !shared_is_claimed && pattern_existed {
+            return shared;
+        }
+
+        let state_id = if shared_is_claimed {
+            self.add_join(left_source.clone(), right_source.clone(), join_condition)
+        } else {
+            shared.clone()
+        };
+
+        let left_seed = match self.states.get(&left_source) {
+            Some(left_state) => left_state.beta_memory.clone(),
+            None => self
+                .states
+                .get(&shared)
+                .map(|state| state.left_memory.clone())
+                .unwrap_or_default(),
+        };
+        let right_seed = self
+            .states
+            .get(&shared)
+            .map(|state| state.right_memory.clone())
+            .unwrap_or_default();
+
+        if let Some(new_state) = self.states.get_mut(&state_id) {
+            new_state.left_memory = left_seed;
+            new_state.right_memory = right_seed;
+            let left_memory = new_state.left_memory.clone();
+            let right_memory = new_state.right_memory.clone();
+            for left_token in &left_memory {
+                for right_token in &right_memory {
+                    if let Some(joined) = BetaState::join_tokens(left_token, right_token) {
+                        new_state.beta_memory.push(joined);
+                    }
+                }
+            }
+        }
+
+        state_id
+    }
+
     /// Process a token from a specific source with proper RETE propagation.
     /// Tokens are propagated through the network to children states.
     /// Returns PStateActivations when tokens reach p-states (Forgy's production terminals).
@@ -295,15 +397,15 @@ impl BetaNetwork {
 
             // Process the token through each relevant state and collect new tokens
             for (state_id, input_type) in states_to_update {
-                let (new_tokens, children, p_state_info) = {
+                let (new_tokens, p_state_info) = {
                     if let Some(state) = self.states.get_mut(&state_id) {
                         let new_tokens = match input_type {
                             InputSide::Left => state.process_left_token(current_token.clone()),
                             InputSide::Right => state.process_right_token(current_token.clone()),
                         };
-                        (new_tokens, state.children.clone(), state.p_state.clone())
+                        (new_tokens, state.p_state.clone())
                     } else {
-                        (Vec::new(), Vec::new(), None)
+                        (Vec::new(), None)
                     }
                 };
 
@@ -318,22 +420,14 @@ impl BetaNetwork {
                     }
                 }
 
-                // RETE propagation: propagate new tokens to children
-                if !new_tokens.is_empty() && !children.is_empty() {
-                    for new_token in new_tokens {
-                        // Non-terminal state - propagate to children
-                        for child_id in &children {
-                            if let Some(child_state) = self.states.get_mut(child_id) {
-                                // Children receive tokens from their parent as left input
-                                let child_new_tokens =
-                                    child_state.process_left_token(new_token.clone());
-                                // Continue propagation for child's new tokens
-                                for child_token in child_new_tokens {
-                                    work_queue.push((child_id.clone(), child_token));
-                                }
-                            }
-                        }
-                    }
+                // Each produced token continues propagation from the state that
+                // produced it: the input index maps that state to its consumers
+                // and declares whether the token enters each as the left or
+                // right side. Processing children inline here instead would skip
+                // the p-state check above (missing activations when a join other
+                // than the terminal one completes) and hardcode the left side.
+                for new_token in new_tokens {
+                    work_queue.push((state_id.clone(), new_token));
                 }
             }
         }
