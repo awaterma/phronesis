@@ -1,0 +1,45 @@
+name: Community signals
+
+on:
+  schedule:
+    - cron: '17 15 * * 1' # Monday 15:17 UTC; Pacific local hour varies with DST.
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/community-snapshot.py'
+      - 'scripts/test_community_snapshot.py'
+      - '.github/workflows/community-signals.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test collection failure handling and reporting
+        run: python3 -m unittest discover -s scripts -p test_community_snapshot.py
+      - name: Collect public signals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/community-snapshot.py --out-dir community-signals
+      - name: Publish readable summary
+        if: always()
+        run: |
+          if [ -f community-signals/summary.md ]; then
+            cat community-signals/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: community-signals-${{ github.run_id }}-${{ github.run_attempt }}
+          path: community-signals/
+          retention-days: 90
+          if-no-files-found: warn
