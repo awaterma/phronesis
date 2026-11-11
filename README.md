@@ -6,6 +6,18 @@ Phronesis (φρόνησις) is a domain-neutral RETE rules engine designed to p
 
 Rules in Phronesis live on disk, are evaluated by lightweight hooks at the moment of action, and fire the same in token nine hundred thousand as they do in token eight hundred.
 
+## Community
+
+Using Phronesis, trying it out, or deciding whether it fits?
+[Tell us what you're building](https://github.com/awaterma/phronesis/discussions/162).
+Experiments, questions, and feedback are welcome; sharing a project link is optional.
+Visit [Discussions](https://github.com/awaterma/phronesis/discussions) for Q&A,
+ideas, and show-and-tell, or [Issues](https://github.com/awaterma/phronesis/issues)
+for reproducible bugs. Please keep private source code and credentials private.
+
+[Public community signals](docs/COMMUNITY-SIGNALS.md) explains our weekly
+snapshots and why downloads and search hits are not user counts.
+
 ## For AI Coding Agents
 
 Phronesis provides persistent code graphs, rule-based inference, provenance,
