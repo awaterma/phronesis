@@ -2,6 +2,8 @@
 
 **Practical wisdom for LLM-assisted work.**
 
+[![Phronesis on StartupScores](https://startupscores.com/badge/phronesis.svg?style=shield&v=combo&theme=dark)](https://startupscores.com/open-source/phronesis)
+
 Phronesis (φρόνησις) is a domain-neutral RETE rules engine designed to provide durable, deterministic governance for non-deterministic AI agents. It addresses the "contextual drift" that occurs in long-running LLM sessions, where project-specific guidance (like `CLAUDE.md`) slowly fades as the context window fills and auto-compaction triggers.
 
 Rules in Phronesis live on disk, are evaluated by lightweight hooks at the moment of action, and fire the same in token nine hundred thousand as they do in token eight hundred.
