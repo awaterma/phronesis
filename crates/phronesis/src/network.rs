@@ -25,7 +25,74 @@ use crate::error::ReteError;
 use crate::production::{ProductionNetwork, ProductionState};
 use crate::script_evaluator::{BuiltinScriptEvaluator, ScriptEval};
 use crate::wme::{WmeManager, WorkingMemoryElement};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, warn};
+
+/// Scope guard returned by [`ReteNetwork::begin_batch`].
+///
+/// While any guard from this network is open (`depth > 0`), `assert_fact`
+/// and `retract_fact` skip the per-fact/per-retraction agenda work they'd
+/// otherwise do (the single- and multi-condition incremental inserts, and
+/// `retract_fact`'s trailing full rescan) — alpha/beta propagation and the
+/// WME store are untouched, only agenda *visibility* of new matches is
+/// deferred. When the last outstanding guard ends (`close` or `Drop`),
+/// exactly one full production scan (`ReteNetwork::full_scan_update_agenda`,
+/// the same algorithm `update_agenda` has always run) rebuilds the agenda
+/// from current alpha/beta state, applying the normal `fired_activations`
+/// refraction check. No per-fact bookkeeping is queued or replayed; this is
+/// a "defer, then catch up once" strategy, not a transaction log.
+///
+/// Nesting is reentrant over one shared depth counter per `ReteNetwork`
+/// instance — not per guard, not task-local. Concurrent callers holding
+/// guards on the *same* `ReteNetwork` share that counter: there is no
+/// isolation between logically-independent batches opened concurrently on
+/// one instance, and the single eventual full scan serves all of them.
+/// Opening guards on different `ReteNetwork` instances is fully
+/// independent, same as any other per-instance state in this type.
+///
+/// # Boundaries and ordering
+///
+/// This is deferred agenda maintenance, not a transaction: fact mutations
+/// remain visible immediately, and an error does not roll them back. Existing
+/// agenda items can still fire during a batch; retraction removes obsolete
+/// items immediately. Callers requiring a consistent boundary must serialize
+/// mutations, firing, and batch opening/closing on the same network. The
+/// per-subsystem locks do not make those operations collectively atomic.
+///
+/// Salience still orders activations, but equal-salience ties may differ from
+/// unbatched insertion order because the final scan discovers matches by rule.
+/// Dropping a guard (including on early return or unwind) closes its scope;
+/// explicitly call [`FactBatch::close`] to receive a scan error. Forgetting a
+/// guard with [`std::mem::forget`] leaves its scope open indefinitely.
+#[must_use = "dropping immediately ends this batch span; bind it to a name"]
+#[derive(Debug)]
+pub struct FactBatch<'a> {
+    network: &'a ReteNetwork,
+    finished: bool,
+}
+
+impl FactBatch<'_> {
+    /// Explicitly end this guard's span now, surfacing the `Result` of the
+    /// final-close full scan (or a poisoned-mutex error) instead of
+    /// swallowing it as `Drop` does. Idempotent: `self` is consumed, so a
+    /// second explicit close is not possible, and `Drop` becomes a no-op
+    /// after this runs.
+    pub fn close(mut self) -> Result<(), ReteError> {
+        self.finished = true;
+        self.network.end_batch()
+    }
+}
+
+impl Drop for FactBatch<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.finished = true;
+            if let Err(err) = self.network.end_batch() {
+                warn!("FactBatch dropped without close(): {err}");
+            }
+        }
+    }
+}
 
 /// Refraction key: one activation of a rule over an ordered WME id list.
 ///
@@ -112,6 +179,14 @@ pub struct ReteNetwork {
     /// Script condition evaluator for `__script__` pseudo-predicate conditions (038-xp-progression).
     /// Defaults to [`BuiltinScriptEvaluator`]; swap via [`ReteNetwork::with_script_evaluator`].
     script_evaluator: Box<dyn ScriptEval>,
+    /// Reentrant fact-batch nesting depth (0 = not batching). See
+    /// [`ReteNetwork::begin_batch`].
+    batch_depth: Arc<Mutex<usize>>,
+    /// Count of completed full production/agenda scans
+    /// (`full_scan_update_agenda` invocations) — incremented once per scan,
+    /// batched or not. Lets tests prove N batched mutations collapse into
+    /// exactly one scan at outermost close, without relying on wall clock.
+    agenda_pass_count: Arc<AtomicU64>,
 }
 
 impl Default for ReteNetwork {
@@ -131,6 +206,8 @@ impl ReteNetwork {
             performance_stats: Arc::new(Mutex::new(PerformanceStats::new())),
             fired_activations: Arc::new(Mutex::new(HashSet::new())),
             script_evaluator: Box::new(BuiltinScriptEvaluator::new()),
+            batch_depth: Arc::new(Mutex::new(0)),
+            agenda_pass_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -147,6 +224,94 @@ impl ReteNetwork {
             script_evaluator: evaluator,
             ..ReteNetwork::new()
         }
+    }
+
+    /// Begin (or nest into) a fact batch: while any guard this returns is
+    /// open, `assert_fact` skips its per-fact agenda-insertion work and
+    /// `retract_fact` skips its trailing full rescan — alpha/beta
+    /// propagation, the WME store, and refraction bookkeeping proceed
+    /// exactly as without batching. When the last outstanding guard ends
+    /// (explicitly via [`FactBatch::close`] or by drop), exactly one full
+    /// production scan (the same algorithm [`ReteNetwork::update_agenda`]
+    /// has always run) rebuilds the agenda from current alpha/beta state.
+    /// See [`FactBatch`] for nesting and concurrency semantics.
+    ///
+    /// ```
+    /// # use phronesis::{engine_types::Fact, error::ReteError, network::ReteNetwork};
+    /// # async fn restore(net: &ReteNetwork, facts: Vec<Fact>) -> Result<(), ReteError> {
+    /// let batch = net.begin_batch()?;
+    /// for fact in facts {
+    ///     net.assert_fact(fact).await?;
+    /// }
+    /// batch.close()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn begin_batch(&self) -> Result<FactBatch<'_>, ReteError> {
+        let mut depth = self
+            .batch_depth
+            .lock()
+            .map_err(|_| ReteError::poisoned("batch_depth"))?;
+        *depth += 1;
+        Ok(FactBatch {
+            network: self,
+            finished: false,
+        })
+    }
+
+    /// Current number of outstanding batch guards (0 = not batching).
+    pub fn batch_depth(&self) -> Result<usize, ReteError> {
+        Ok(*self
+            .batch_depth
+            .lock()
+            .map_err(|_| ReteError::poisoned("batch_depth"))?)
+    }
+
+    /// Number of successfully completed full production/agenda scans.
+    /// Incremental per-fact insertions and deferred updates do not count.
+    /// Useful for observing batch effectiveness without timing assertions.
+    pub fn agenda_pass_count(&self) -> u64 {
+        self.agenda_pass_count.load(Ordering::SeqCst)
+    }
+
+    /// `true` while any [`FactBatch`] guard on this network is open.
+    fn is_batching(&self) -> Result<bool, ReteError> {
+        Ok(*self
+            .batch_depth
+            .lock()
+            .map_err(|_| ReteError::poisoned("batch_depth"))?
+            > 0)
+    }
+
+    /// Decrement the batch depth; when it reaches 0, run exactly one full
+    /// production scan to catch the agenda up with whatever alpha/beta
+    /// state accumulated while batching. Called by [`FactBatch::close`] and
+    /// by its `Drop` impl. Errors (a poisoned mutex, or underflow — this
+    /// `end_batch` running without a matching `begin_batch`, which should
+    /// be unreachable via the public API since only a `FactBatch` created
+    /// by `begin_batch` can call it, and each does so at most once) leave
+    /// `batch_depth` untouched rather than corrupting it, so a subsequent
+    /// correctly-paired `begin_batch`/`end_batch` still behaves normally.
+    fn end_batch(&self) -> Result<(), ReteError> {
+        {
+            let mut depth = self
+                .batch_depth
+                .lock()
+                .map_err(|_| ReteError::poisoned("batch_depth"))?;
+            match depth.checked_sub(1) {
+                Some(next) => *depth = next,
+                None => {
+                    return Err(ReteError::Internal(
+                        "FactBatch: end_batch called without a matching begin_batch (depth underflow)"
+                            .to_string(),
+                    ));
+                }
+            }
+            if *depth > 0 {
+                return Ok(());
+            }
+        }
+        self.full_scan_update_agenda()
     }
 
     /// Process a new fact through the RETE network
@@ -196,12 +361,23 @@ impl ReteNetwork {
             acts
         };
 
-        if !p_state_activations.is_empty() {
-            self.add_p_state_activations(&p_state_activations)?;
-        }
+        // While a FactBatch is open, skip the per-fact agenda-insertion work
+        // below entirely: alpha/beta propagation above already ran (beta
+        // memories and alpha WME stores are current), and the outermost
+        // guard's single full scan will discover every resulting match —
+        // including these — against `fired_activations` exactly once. Not
+        // skipping just the agenda write (and still touching
+        // `fired_activations`/`activation_wmes` per fact) would leave the
+        // multi-condition path doing per-fact work for nothing, since the
+        // final scan recomputes everything from `beta_memory` anyway.
+        if !self.is_batching()? {
+            if !p_state_activations.is_empty() {
+                self.add_p_state_activations(&p_state_activations)?;
+            }
 
-        // Handle single-condition rules (alpha-only path, no beta chain)
-        self.update_agenda_for_wme_single_condition(&wme_id).await?;
+            // Handle single-condition rules (alpha-only path, no beta chain)
+            self.update_agenda_for_wme_single_condition(&wme_id).await?;
+        }
 
         // Record metrics
         {
@@ -340,7 +516,11 @@ impl ReteNetwork {
             agenda.remove_by_condition(|item| item.wme_list.iter().any(|w| w.id == wme_id));
         }
 
-        // Update agenda after removal
+        // Update agenda after removal. While a FactBatch is open this is a
+        // no-op (see `update_agenda`) — no per-retract full scan runs;
+        // instead the next match-or-not for this rule set is picked up by
+        // the single scan the outermost guard runs at close, same as every
+        // other mutation made during the batch.
         self.update_agenda().await?;
 
         Ok(removed_wme)
@@ -535,19 +715,42 @@ impl ReteNetwork {
         Ok(())
     }
 
-    /// Update the agenda based on current network state
-    /// FIXED: Now handles both single-condition (alpha only) and multi-condition (beta) rules
-    /// NOTE: This does a full scan - prefer update_agenda_for_wme() for incremental updates
+    /// Update the agenda based on current network state.
+    ///
+    /// While a [`FactBatch`] is open on this network, this is a no-op: the
+    /// outermost guard's close runs the same scan exactly once instead, so
+    /// calling `update_agenda` directly mid-batch does not bypass batching
+    /// or trigger extra scans.
+    ///
+    /// NOTE: this does a full scan — prefer the incremental per-fact paths
+    /// (`update_agenda_for_wme_single_condition`, beta-driven p-state
+    /// activations) for the hot assert path; this exists for callers that
+    /// need to force a full rebuild (e.g. after directly mutating rules)
+    /// and for `FactBatch`'s outermost-close catch-up.
     pub async fn update_agenda(&self) -> Result<(), ReteError> {
-        // tracing::debug imported at module level
+        if self.is_batching()? {
+            return Ok(());
+        }
+        self.full_scan_update_agenda()
+    }
 
+    /// The actual full production/agenda scan: for every rule, find its
+    /// current matches in alpha (single-condition) or beta (multi-condition)
+    /// state and insert any not already in `fired_activations` into the live
+    /// agenda. Synchronous (no lock here is held across an `.await`) so it
+    /// can run from [`FactBatch`]'s `Drop` impl, which cannot be async.
+    /// Increments [`ReteNetwork::agenda_pass_count`] exactly once per call —
+    /// the deterministic signal batching tests use to prove N staged
+    /// mutations collapse into one scan.
+    fn full_scan_update_agenda(&self) -> Result<(), ReteError> {
         // Use the persistent fired_activations set
         let mut fired_activations = self
             .fired_activations
             .lock()
             .map_err(|_| ReteError::poisoned("fired_activations"))?;
 
-        // Get all production rules
+        // Get all production rules. `states` is `Vec<Arc<ProductionState>>`,
+        // so this clones pointers, not every rule's conditions/actions.
         let rules = {
             let production_network = self
                 .production_network
@@ -571,6 +774,7 @@ impl ReteNetwork {
             }
         }
 
+        self.agenda_pass_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::agenda::AgendaItem;
@@ -84,7 +85,16 @@ pub struct SingleCondRuleEntry {
 /// Production Network manages all production states
 #[derive(Debug)]
 pub struct ProductionNetwork {
-    pub states: Vec<ProductionState>,
+    /// `Arc`-wrapped so the full-scan path (`ReteNetwork::update_agenda`)
+    /// can clone the vector itself without deep-cloning every `Rule`
+    /// (conditions, actions) it contains.
+    ///
+    /// Migration from `Vec<ProductionState>`: callers directly inserting a
+    /// state must use `states.push(Arc::new(state))`. Reads dereference as
+    /// before; direct mutable access now requires `Arc::get_mut` or
+    /// `Arc::make_mut`. Prefer the network's rule-management methods so its
+    /// indexes remain synchronized.
+    pub states: Vec<Arc<ProductionState>>,
     pub rule_index: HashMap<String, String>, // Maps rule ID to production state ID
     /// Predicate → single-condition rules that match that predicate. Avoids a
     /// full `states.clone()` + scan per fact assertion on the hot path.
@@ -141,7 +151,7 @@ impl ProductionNetwork {
                 });
         }
 
-        self.states.push(production_state);
+        self.states.push(Arc::new(production_state));
         self.rule_index.insert(rule.id.clone(), state_id.clone());
 
         state_id
@@ -155,7 +165,10 @@ impl ProductionNetwork {
     /// Find a production state by rule ID
     pub fn find_by_rule_id(&self, rule_id: &str) -> Option<&ProductionState> {
         if let Some(state_id) = self.rule_index.get(rule_id) {
-            self.states.iter().find(|state| state.id == *state_id)
+            self.states
+                .iter()
+                .find(|state| state.id == *state_id)
+                .map(|state| state.as_ref())
         } else {
             None
         }
