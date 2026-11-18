@@ -65,6 +65,15 @@ jobs:
       - run: cargo build -p phronesis-mcp
       - name: Real Go source, hooks, graph, test outcomes, and MCP inventory
         run: python3 scripts/verify-language-packs.py --binary "$PWD/target/debug/phr-mcp" --artifacts "$RUNNER_TEMP/language-packs" --go "$(command -v go)"
+      - name: Real Go coverage import, graph identity, selection, and missing evidence
+        run: python3 scripts/verify-go-coverage.py --binary "$PWD/target/debug/phr-mcp" --artifacts "$RUNNER_TEMP/go-coverage" --go "$(command -v go)"
+      - name: Keep Go coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage-evidence
+          path: ${{ runner.temp }}/go-coverage
+          if-no-files-found: error
       - name: Keep verifier evidence
         if: always()
         uses: actions/upload-artifact@v4

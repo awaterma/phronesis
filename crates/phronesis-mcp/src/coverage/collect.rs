@@ -20,9 +20,7 @@ use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use crate::coverage::region_map::{
-    BranchSite, FunctionSite, extract_branch_sites, extract_function_sites_for,
-};
+use crate::coverage::region_map::{BranchSite, FunctionSite, extract_branch_sites};
 use crate::coverage::store::HitRecord;
 
 /// One llvm-cov JSON export: `{"data": [{files, functions, totals}]}`.
@@ -209,7 +207,10 @@ fn fn_map<'m>(
     if !cache.contains_key(rel) {
         let src = std::fs::read_to_string(root.join(rel))
             .with_context(|| format!("reading covered source: {rel}"))?;
-        cache.insert(rel.to_string(), extract_function_sites_for(rel, &src)?);
+        cache.insert(
+            rel.to_string(),
+            crate::coverage::region_map::extract_function_sites_in(root, rel, &src)?,
+        );
     }
     Ok(cache.get(rel).expect("just inserted"))
 }

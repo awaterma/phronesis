@@ -503,6 +503,19 @@ pub fn extract_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
         .collect())
 }
 
+/// Extract with repository context, needed for Go module and receiver identities.
+pub fn extract_function_sites_in(
+    root: &Path,
+    file: &str,
+    source: &str,
+) -> Result<Vec<FunctionSite>> {
+    if file.ends_with(".go") {
+        crate::coverage::language::go::function_sites(root, file, source)
+    } else {
+        extract_function_sites_for(file, source)
+    }
+}
+
 pub fn extract_function_sites_for(rel_path: &str, source: &str) -> Result<Vec<FunctionSite>> {
     match crate::coverage::language::language_for_path(rel_path) {
         Some(l) => match l.function_sites_for_path {
@@ -775,6 +788,24 @@ impl ChangedRegions {
 /// Either side over [`REGION_MAP_MAX_BYTES`] maps to one coarse whole-file
 /// region instead of per-site regions.
 pub fn changed_regions(file: &str, old: &str, new: &str) -> Result<ChangedRegions> {
+    changed_regions_with(file, old, new, |source| {
+        extract_function_sites_for(file, source)
+    })
+}
+
+/// Root-aware counterpart used by selection and hook hydration.
+pub fn changed_regions_in(root: &Path, file: &str, old: &str, new: &str) -> Result<ChangedRegions> {
+    changed_regions_with(file, old, new, |source| {
+        extract_function_sites_in(root, file, source)
+    })
+}
+
+fn changed_regions_with(
+    file: &str,
+    old: &str,
+    new: &str,
+    sites: impl Fn(&str) -> Result<Vec<FunctionSite>>,
+) -> Result<ChangedRegions> {
     if old.len() > REGION_MAP_MAX_BYTES || new.len() > REGION_MAP_MAX_BYTES {
         return Ok(ChangedRegions::whole_file(file));
     }
@@ -784,7 +815,7 @@ pub fn changed_regions(file: &str, old: &str, new: &str) -> Result<ChangedRegion
     let mut branches = HashSet::new();
     for (source, changed) in [(old, &changed_old), (new, &changed_new)] {
         let touched = |start: u64, end: u64| (start..=end).any(|line| changed.contains(&line));
-        let function_sites = extract_function_sites_for(file, source)?;
+        let function_sites = sites(source)?;
         let branch_sites = if file.ends_with(".rs") {
             extract_branch_sites(source)?
         } else {
