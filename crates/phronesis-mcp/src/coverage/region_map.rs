@@ -815,11 +815,13 @@ fn changed_regions_with(
     let mut branches = HashSet::new();
     for (source, changed) in [(old, &changed_old), (new, &changed_new)] {
         let touched = |start: u64, end: u64| (start..=end).any(|line| changed.contains(&line));
-        let function_sites = sites(source)?;
-        let branch_sites = if file.ends_with(".rs") {
-            extract_branch_sites(source)?
+        // Rust functions and branches share one parse and ancestry walk.
+        // Extracting them separately repeats the most expensive work on
+        // large files in the synchronous hook path.
+        let (function_sites, branch_sites) = if file.ends_with(".rs") {
+            extract_sites(source)?
         } else {
-            Vec::new()
+            (sites(source)?, Vec::new())
         };
         for site in function_sites {
             if touched(site.start_line, site.end_line) {
