@@ -543,6 +543,12 @@ enum CoverageCmd {
         /// Evidence tool name (required for lcov-dir).
         #[arg(long)]
         tool: Option<String>,
+        /// Identity for one isolated per-test LCOV report with empty TN (never a combined report).
+        #[arg(long)]
+        test_id: Option<String>,
+        /// Explicit workspace prefix to strip from LCOV SF paths, e.g. my_workspace.
+        #[arg(long)]
+        workspace_prefix: Option<String>,
         /// Permit a dirty host tree (manifest hashes still must match).
         #[arg(long)]
         allow_dirty: bool,
@@ -948,6 +954,8 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
             tool,
             allow_dirty,
             no_manifest,
+            test_id,
+            workspace_prefix,
         } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
@@ -955,6 +963,14 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
+            if format != "lcov-dir" && (test_id.is_some() || workspace_prefix.is_some()) {
+                anyhow::bail!("--test-id and --workspace-prefix require --format lcov-dir");
+            }
+            let lcov_options = phronesis_mcp::coverage::lcov::LcovOptions {
+                test_id,
+                workspace_prefix,
+            };
+            lcov_options.validate()?;
             let summary = if format == "jsonl" {
                 if tool.is_some() || no_manifest {
                     anyhow::bail!("--tool and --no-manifest are only valid with --format lcov-dir");
@@ -985,8 +1001,10 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                         );
                     }
                     for (file, expected) in &manifest.files {
-                        let bytes = std::fs::read(root.join(file))
-                            .with_context(|| format!("manifest file missing on host: {file}"))?;
+                        let bytes = std::fs::read(
+                            phronesis_mcp::coverage::lcov::manifest_source_path(&root, file)?,
+                        )
+                        .with_context(|| format!("manifest file missing on host: {file}"))?;
                         let actual = phronesis_mcp::properties::execute::artifact_sha256(&bytes);
                         if &actual != expected {
                             anyhow::bail!("manifest digest mismatch for {file}");
@@ -1000,7 +1018,7 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                     for (_, files) in &sources {
                         for source in files {
                             if let phronesis_mcp::coverage::lcov::Relativized::Path(file) =
-                                phronesis_mcp::coverage::lcov::relativize(&root, &source.path)
+                                lcov_options.relativize(&root, &source.path)
                                 && !manifest.files.contains_key(&file)
                             {
                                 anyhow::bail!("manifest has no digest for covered source {file}");
@@ -1049,29 +1067,22 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                         );
                     }
                     for (file, expected) in &manifest.files {
-                        let bytes = std::fs::read(root.join(file))
-                            .with_context(|| format!("manifest file missing on host: {file}"))?;
+                        let bytes = std::fs::read(
+                            phronesis_mcp::coverage::lcov::manifest_source_path(&root, file)?,
+                        )
+                        .with_context(|| format!("manifest file missing on host: {file}"))?;
                         let actual = phronesis_mcp::properties::execute::artifact_sha256(&bytes);
                         if &actual != expected {
                             anyhow::bail!("manifest digest mismatch for {file}");
                         }
                     }
-                    for entry in std::fs::read_dir(&dir)?
-                        .flatten()
-                        .map(|e| e.path())
-                        .filter(|p| {
-                            matches!(
-                                p.extension().and_then(|e| e.to_str()),
-                                Some("lcov" | "info")
-                            )
-                        })
-                    {
+                    for entry in phronesis_mcp::coverage::lcov::report_paths(&dir)? {
                         let lcov = phronesis_mcp::coverage::lcov::parse_lcov(
                             &std::fs::read_to_string(entry)?,
                         )?;
                         for source in lcov.files {
                             if let phronesis_mcp::coverage::lcov::Relativized::Path(file) =
-                                phronesis_mcp::coverage::lcov::relativize(&root, &source.path)
+                                lcov_options.relativize(&root, &source.path)
                                 && !manifest.files.contains_key(&file)
                             {
                                 anyhow::bail!("manifest has no digest for covered source {file}");
@@ -1079,9 +1090,14 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                         }
                     }
                 }
-                let (records, details) = phronesis_mcp::coverage::lcov::records_from_lcov_dir(
-                    &root, &dir, &tool, &revision,
-                )?;
+                let (records, details) =
+                    phronesis_mcp::coverage::lcov::records_from_lcov_dir_with_options(
+                        &root,
+                        &dir,
+                        &tool,
+                        &revision,
+                        &lcov_options,
+                    )?;
                 let summary = phronesis_mcp::coverage::import::import_records(&root, records, now)?;
                 println!(
                     "lcov: {} files, {} tests, {} unresolved SF, {} ambiguous SF, {} filtered SF, {} without regions, {} unattributable",

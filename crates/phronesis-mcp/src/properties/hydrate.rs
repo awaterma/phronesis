@@ -77,7 +77,12 @@ fn changed_region_ids(input: &PropertyHydrationInput) -> HashSet<String> {
                 &rel,
             ))
         } else {
-            crate::coverage::region_map::changed_regions(&rel, edit.old.unwrap_or(""), edit.new)
+            crate::coverage::region_map::changed_regions_in(
+                input.root,
+                &rel,
+                edit.old.unwrap_or(""),
+                edit.new,
+            )
         };
         if let Ok(regions) = regions {
             changed.extend(regions.all().cloned());

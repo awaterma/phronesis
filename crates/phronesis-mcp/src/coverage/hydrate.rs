@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::coverage::region_map::{
-    ChangedRegions, changed_regions, is_qualified_region_id, repo_relative_path,
-};
+use crate::coverage::region_map::{ChangedRegions, is_qualified_region_id, repo_relative_path};
 use crate::coverage::store::{StoreCorruption, StoreState, is_stale, load_store};
 
 /// Every relation this module can assert. The hook demand-gates on this
@@ -176,7 +174,12 @@ pub fn hydrate(input: &HydrationInput) -> anyhow::Result<Hydration> {
             let regions = if edit.whole_file {
                 ChangedRegions::whole_file(rel)
             } else {
-                changed_regions(rel, edit.old.unwrap_or(""), edit.new)?
+                crate::coverage::region_map::changed_regions_in(
+                    input.root,
+                    rel,
+                    edit.old.unwrap_or(""),
+                    edit.new,
+                )?
             };
             for region in regions.all() {
                 changed_regions_out.push(region.clone());

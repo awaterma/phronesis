@@ -1,7 +1,9 @@
 //! Import lcov line and function counters as per-test function-region evidence.
+#[cfg(test)]
+use crate::coverage::region_map::extract_function_sites_for;
 use crate::coverage::{
     collect::is_wanted_source,
-    region_map::{FunctionSite, extract_function_sites_for},
+    region_map::FunctionSite,
     store::{COVERAGE_FORMAT, HitRecord},
 };
 use anyhow::{Context, Result, bail};
@@ -88,17 +90,44 @@ fn clean(path: &Path) -> Option<PathBuf> {
     }
     Some(out)
 }
+/// Only ordinary repository files qualify; do not follow source symlinks.
+pub fn manifest_source_path(root: &Path, rel: &str) -> Result<PathBuf> {
+    let path = Path::new(rel);
+    if path.is_absolute() || clean(path).as_deref() != Some(path) {
+        bail!("unsafe coverage source path: {rel}");
+    }
+    let mut current = root.to_path_buf();
+    for part in path.components() {
+        current.push(part.as_os_str());
+        if std::fs::symlink_metadata(&current)?
+            .file_type()
+            .is_symlink()
+        {
+            bail!("coverage source traverses a symlink: {rel}");
+        }
+    }
+    if !current.is_file() {
+        bail!("coverage source is not a file: {rel}");
+    }
+    Ok(current)
+}
+
 pub fn relativize(root: &Path, sf: &str) -> Relativized {
     let p = Path::new(sf);
+    if p.components()
+        .any(|part| matches!(part, Component::ParentDir))
+    {
+        return Relativized::Missing;
+    }
     if !p.is_absolute() {
         return clean(p)
-            .filter(|r| root.join(r).is_file())
+            .filter(|r| manifest_source_path(root, &r.to_string_lossy()).is_ok())
             .map(|r| Relativized::Path(r.to_string_lossy().replace('\\', "/")))
             .unwrap_or(Relativized::Missing);
     }
     if let Ok(r) = p.strip_prefix(root) {
         return clean(r)
-            .filter(|r| root.join(r).is_file())
+            .filter(|r| manifest_source_path(root, &r.to_string_lossy()).is_ok())
             .map(|r| Relativized::Path(r.to_string_lossy().replace('\\', "/")))
             .unwrap_or(Relativized::Missing);
     }
@@ -120,7 +149,20 @@ pub fn relativize(root: &Path, sf: &str) -> Relativized {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                if matches!(
+                    entry.file_name().to_str(),
+                    Some(".git" | "target" | "node_modules")
+                ) || entry.file_name().to_string_lossy().starts_with("bazel-")
+                {
+                    continue;
+                }
                 pending.push(path);
                 continue;
             }
@@ -213,7 +255,23 @@ pub fn hit_sites<'a>(
         if counts.as_slice() == [0] {
             continue;
         }
-        if (lang.is_one_liner)(site) {
+        if lang.id == "go" {
+            // Go reports statement counters, not declaration execution. A DA
+            // shared by two declarations cannot identify either invocation.
+            if src.line_hits.iter().any(|(line, count)| {
+                *count > 0
+                    && *line >= site.body_start_line
+                    && (*line < site.end_line
+                        || site.body_start_line == site.end_line && *line == site.end_line)
+                    && sites
+                        .iter()
+                        .filter(|other| *line >= other.start_line && *line <= other.end_line)
+                        .count()
+                        == 1
+            }) {
+                hit.push(site);
+            }
+        } else if (lang.is_one_liner)(site) {
             if !lang.one_liner_needs_fnda {
                 // Producer has no reliable FNDA names (mangled or absent):
                 // never attribute from the DA of the declaration line alone.
@@ -309,7 +367,11 @@ pub fn records_from_sources(
             if !cache.contains_key(&rel) {
                 cache.insert(
                     rel.clone(),
-                    extract_function_sites_for(&rel, &std::fs::read_to_string(root.join(&rel))?)?,
+                    crate::coverage::region_map::extract_function_sites_in(
+                        root,
+                        &rel,
+                        &std::fs::read_to_string(root.join(&rel))?,
+                    )?,
                 );
             }
             let sites = &cache[&rel];
@@ -356,16 +418,77 @@ pub fn records_from_lcov_dir(
     tool: &str,
     revision: &str,
 ) -> Result<(Vec<HitRecord>, LcovDirSummary)> {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            matches!(
-                p.extension().and_then(|e| e.to_str()),
-                Some("lcov" | "info")
-            )
-        })
-        .collect();
+    records_from_lcov_dir_with_options(root, dir, tool, revision, &LcovOptions::default())
+}
+
+#[derive(Debug, Default)]
+pub struct LcovOptions {
+    /// Explicit identity of the single test represented by one report.
+    pub test_id: Option<String>,
+    /// Explicit Bazel workspace path prefix; never guessed from a basename.
+    pub workspace_prefix: Option<String>,
+}
+
+impl LcovOptions {
+    pub fn validate(&self) -> Result<()> {
+        if self.test_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+            bail!("--test-id must not be empty");
+        }
+        if let Some(prefix) = &self.workspace_prefix
+            && (prefix.is_empty()
+                || Path::new(prefix).is_absolute()
+                || prefix
+                    .split('/')
+                    .any(|p| p.is_empty() || p == "." || p == "..")
+                || prefix.contains('\\'))
+        {
+            bail!("--workspace-prefix must be a normal relative path without dot components");
+        }
+        Ok(())
+    }
+    pub fn relativize(&self, root: &Path, sf: &str) -> Relativized {
+        let stripped = self
+            .workspace_prefix
+            .as_ref()
+            .and_then(|prefix| sf.strip_prefix(&format!("{prefix}/")))
+            .unwrap_or(sf);
+        relativize(root, stripped)
+    }
+}
+
+/// Enumerate the same ordinary report files for parsing and manifest validation.
+pub fn report_paths(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("lcov" | "info")
+        ) || path.file_name().and_then(|n| n.to_str()) == Some("coverage.dat")
+        {
+            paths.push(path);
+        }
+    }
     paths.sort();
+    Ok(paths)
+}
+
+pub fn records_from_lcov_dir_with_options(
+    root: &Path,
+    dir: &Path,
+    tool: &str,
+    revision: &str,
+    options: &LcovOptions,
+) -> Result<(Vec<HitRecord>, LcovDirSummary)> {
+    options.validate()?;
+    let paths = report_paths(dir)?;
+    if options.test_id.is_some() && paths.len() != 1 {
+        bail!("--test-id requires exactly one per-test LCOV report");
+    }
     let mut summary = LcovDirSummary {
         files: paths.len(),
         ..Default::default()
@@ -376,12 +499,23 @@ pub fn records_from_lcov_dir(
     for path in paths {
         let l = parse_lcov(&std::fs::read_to_string(&path)?)
             .with_context(|| format!("parsing {}", path.display()))?;
+        if let (Some(tn), Some(explicit)) = (&l.test_name, &options.test_id)
+            && tn != explicit
+        {
+            bail!("LCOV TN conflicts with --test-id");
+        }
         let test = l
             .test_name
-            .with_context(|| format!("{}: missing TN", path.display()))?;
+            .or_else(|| options.test_id.clone())
+            .with_context(|| {
+                format!(
+                    "{}: missing TN; use --test-id only for a report from one isolated test",
+                    path.display()
+                )
+            })?;
         tests.insert(test.clone());
         for src in l.files {
-            let rel = match relativize(root, &src.path) {
+            let rel = match options.relativize(root, &src.path) {
                 Relativized::Path(p) => p,
                 Relativized::Missing => {
                     summary.unresolved_sf.push(src.path);
@@ -400,7 +534,10 @@ pub fn records_from_lcov_dir(
             }
             if !cache.contains_key(&rel) {
                 let text = std::fs::read_to_string(root.join(&rel))?;
-                cache.insert(rel.clone(), extract_function_sites_for(&rel, &text)?);
+                cache.insert(
+                    rel.clone(),
+                    crate::coverage::region_map::extract_function_sites_in(root, &rel, &text)?,
+                );
             }
             let sites = &cache[&rel];
             if sites.is_empty() {

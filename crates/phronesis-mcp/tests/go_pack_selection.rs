@@ -78,10 +78,9 @@ fn changed_go_body_selects_direct_and_transitive_tests_only_when_graph_is_fresh(
         "{:?}",
         selected.static_note
     );
-    assert_eq!(
-        selected.dynamic_coverage_unsupported,
-        vec!["nested/calc/work.go"]
-    );
+    assert!(selected.dynamic_coverage_unsupported.is_empty());
+    assert_eq!(selected.functions_without_dynamic_evidence.len(), 1);
+    assert!(selected.functions_without_dynamic_evidence[0].ends_with("::Work"));
     let tests: Vec<_> = selected
         .tests
         .iter()

@@ -71,3 +71,5 @@ for any file, so a damaged policy cannot safely be ignored by extension. Audit
 retains native findings it can compute but reports the inventory failure as
 incomplete rather than certifying unknown policy. This failure does not mean
 that every native source file changed.
+
+Go runtime coverage import and selection are documented in [GO-COVERAGE.md](GO-COVERAGE.md), including per-test Bazel reports, explicit attribution, manifests and CI acceptance. Other installed packs do not automatically gain runtime coverage semantics.

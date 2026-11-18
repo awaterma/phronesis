@@ -79,6 +79,8 @@ pub struct Selection {
     pub no_coverage_semantics: Vec<String>,
     /// Executable pack sources for which no dynamic collector exists.
     pub dynamic_coverage_unsupported: Vec<String>,
+    /// Changed functions with no fresh dynamic hit (static reach does not fill a gap).
+    pub functions_without_dynamic_evidence: Vec<String>,
 }
 
 /// A file diff entry: repo-relative path, old content, new content.
@@ -144,11 +146,20 @@ fn git_show_head(root: &Path, path: &str) -> Result<String> {
 
 /// Compute changed regions from a set of file diffs.
 pub fn changed_regions_from_diffs(diffs: &[FileDiff]) -> Result<ChangedRegions> {
+    changed_regions_from_diffs_with(diffs, |diff| {
+        changed_regions(&diff.path, diff.old.as_deref().unwrap_or(""), &diff.new)
+    })
+}
+
+fn changed_regions_from_diffs_with(
+    diffs: &[FileDiff],
+    map: impl Fn(&FileDiff) -> Result<ChangedRegions>,
+) -> Result<ChangedRegions> {
     let mut functions = std::collections::BTreeSet::new();
     let mut branches = std::collections::BTreeSet::new();
     let mut files = std::collections::BTreeSet::new();
     for diff in diffs {
-        let regions = changed_regions(&diff.path, diff.old.as_deref().unwrap_or(""), &diff.new)?;
+        let regions = map(diff)?;
         for f in regions.functions {
             functions.insert(f);
         }
@@ -181,7 +192,14 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
     };
 
     let diffs = working_tree_diffs(root).unwrap_or_default();
-    let regions = changed_regions_from_diffs(&diffs)?;
+    let regions = changed_regions_from_diffs_with(&diffs, |diff| {
+        crate::coverage::region_map::changed_regions_in(
+            root,
+            &diff.path,
+            diff.old.as_deref().unwrap_or(""),
+            &diff.new,
+        )
+    })?;
     let no_coverage_semantics = evaluated_no_coverage_files(&diffs);
 
     // --- Dynamic half: coverage store ---
@@ -253,7 +271,7 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
             diffs
                 .iter()
                 .filter_map(|diff| match registry.for_path(&diff.path) {
-                    Ok(Some(_)) => Some(diff.path.clone()),
+                    Ok(Some(_)) if !diff.path.ends_with(".go") => Some(diff.path.clone()),
                     _ => None,
                 })
                 .collect::<BTreeSet<_>>()
@@ -273,7 +291,15 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
             .filter(|e| e.p == "defines_fn" && e.a.len() == 2)
             .map(|e| (e.a[1].as_str(), e.a[0].as_str()))
             .collect();
+        let pack_symbols: BTreeSet<&str> = edges
+            .iter()
+            .filter(|edge| edge.p == "pack_declaration" && edge.a.len() >= 2)
+            .map(|edge| edge.a[1].as_str())
+            .collect();
         let reached = |func: &str| -> Vec<&String> {
+            if pack_symbols.contains(func) {
+                return Vec::new();
+            }
             let Some(file) = defined_in.get(func) else {
                 return Vec::new();
             };
@@ -401,7 +427,21 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
         }
     }
 
+    let functions_without_dynamic_evidence = regions
+        .functions
+        .iter()
+        .filter(|region| {
+            !hits.iter().any(|hit| {
+                hit.region == **region
+                    && observation == COVERAGE_OBSERVATION
+                    && coverage_note.is_none()
+                    && !hit.tool.contains("+unverified")
+            })
+        })
+        .cloned()
+        .collect();
     Ok(Selection {
+        functions_without_dynamic_evidence,
         change,
         changed_functions: regions.functions,
         changed_branches: regions.branches,
@@ -527,6 +567,12 @@ fn graph_freshness_status(root: &Path, edges: &[Edge]) -> (bool, Option<String>)
 /// Render the selection as a human-readable table.
 pub fn render_table(sel: &Selection) -> String {
     let mut out = String::new();
+    if !sel.functions_without_dynamic_evidence.is_empty() {
+        out.push_str(&format!(
+            "Functions without fresh dynamic evidence: {}\n",
+            sel.functions_without_dynamic_evidence.join(", ")
+        ));
+    }
 
     if sel.tests.is_empty() {
         match &sel.coverage_note {
@@ -656,6 +702,7 @@ pub fn to_json(sel: &Selection) -> serde_json::Value {
     serde_json::json!({
         "change": sel.change,
         "changed_functions": sel.changed_functions,
+        "functions_without_dynamic_evidence": sel.functions_without_dynamic_evidence,
         "changed_branches": sel.changed_branches,
         "no_coverage_semantics": sel.no_coverage_semantics,
         "dynamic_coverage_unsupported": sel.dynamic_coverage_unsupported,

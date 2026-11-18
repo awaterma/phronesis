@@ -79,7 +79,14 @@ pub fn changed_pack_symbols(
     Ok(changed
         .into_iter()
         .map(|(file, symbol)| PackChangedSymbol {
-            region: function_region_id(&file, &symbol),
+            region: function_region_id(
+                &file,
+                &if file.ends_with(".go") {
+                    crate::coverage::language::go::region_item(&symbol)
+                } else {
+                    symbol.clone()
+                },
+            ),
             file,
             symbol,
         })

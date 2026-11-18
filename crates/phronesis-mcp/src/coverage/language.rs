@@ -5,6 +5,7 @@
 
 use crate::coverage::region_map::{FunctionSite, extract_function_sites, python_function_sites};
 
+pub mod go;
 pub mod lua;
 pub mod typescript;
 
@@ -83,6 +84,7 @@ pub mod python {
 pub mod swift;
 
 pub static LANGUAGES: &[CoverageLanguage] = &[
+    go::LANGUAGE,
     CoverageLanguage {
         id: "rust",
         extensions: &["rs"],
