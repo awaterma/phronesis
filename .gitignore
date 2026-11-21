@@ -41,6 +41,13 @@ docs/phronesis-evaluation-*.html
 *.profraw
 crates/phronesis-mcp/tests/fixtures/coverage-sample/target/
 
+# Website build output and caches
+docs/_site/
+docs/.jekyll-cache/
+
+# Python documentation-checker bytecode
+**/__pycache__/
+
 # Local agent skill files: ignore by default so unrelated local skills are
 # never imported into Git; the shipped docs-maintenance skill is the explicit
 # allowlist exception.

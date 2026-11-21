@@ -1,0 +1,108 @@
+# Documentation site: locked build, checks, preview artifacts, and a
+# manually gated deployment. Nothing here switches the live deployment;
+# going live requires an explicit, approved workflow_dispatch and the
+# github-pages environment protection (see docs/contributing/website.md).
+
+name: Docs site
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "scripts/check_docs.py"
+      - "scripts/check-docs.sh"
+      - "scripts/check-catalogue.sh"
+      - "crates/phronesis-mcp/src/init/**"
+      - "crates/phronesis-mcp/src/catalogue.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/checker-requirements.txt"
+      - "scripts/tests/**"
+      - "scripts/website/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy the built site to GitHub Pages (gated)"
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+
+# docs/.ruby-version pins the exact Ruby patch; Gemfile.lock pins gems.
+env:
+  BUNDLE_FROZEN: "true"
+
+jobs:
+  build:
+    name: Build + documentation checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          # ruby-version omitted: setup-ruby reads docs/.ruby-version
+          # (exact patch pin) from working-directory.
+          bundler-cache: true
+          working-directory: docs
+      - name: Install pinned checker dependencies
+        run: python3 -m pip install --disable-pip-version-check -r scripts/checker-requirements.txt
+      - name: Checker unit tests (regression fixtures)
+        run: python3 -m unittest discover -s scripts/tests -v
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+      - uses: Swatinem/rust-cache@v2
+      - name: Catalogue matches shipped rule definitions
+        run: scripts/check-catalogue.sh
+      - name: Source checks (strict gate)
+        run: scripts/check-docs.sh --source-only --strict --json
+      - name: Build site and verify private-draft exclusion
+        run: DOCS_BUILD_NO_DOCKER=1 scripts/website/test-private-draft.sh
+      - name: Generate migration redirects
+        run: python3 scripts/website/gen_redirects.py --site docs/_site
+      - name: Rendered checks (strict gate)
+        run: |
+          scripts/check-docs.sh --site docs/_site --strict --json > docs-check-report.json
+          cat docs-check-report.json
+      - name: Keep built site for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site-preview
+          path: docs/_site
+          if-no-files-found: error
+      - name: Keep check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-check-report
+          path: docs-check-report.json
+          if-no-files-found: ignore
+      - name: Package Pages artifact for the gated deploy
+        if: github.event_name == 'workflow_dispatch' && inputs.deploy == true
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_site
+
+  # Manual, gated deployment only. The build job packages the Pages
+  # artifact when deploy is requested; this job only publishes it. The
+  # github-pages environment must be protected with required reviewers,
+  # and switching the repository Pages source from branch to Actions is
+  # the collaborator's separate manual step.
+  deploy:
+    name: Deploy to GitHub Pages (manual gate)
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy == true
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
