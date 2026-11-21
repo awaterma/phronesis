@@ -43,3 +43,23 @@ Inventory tracked documents with `git ls-files` only. Untracked local drafts are
 ## Checks
 
 Structural requirements (index reachability, internal links, spec status headers, migration-map consistency) are enforced by the shared documentation check command run in CI; run the same command locally before handing off documentation changes and report what passed, what remains uncertain, and any deferred work.
+
+
+After the website/CI layer is present, use the shared gates:
+
+```sh
+python3 -m pip install -r scripts/checker-requirements.txt
+python3 -m unittest discover -s scripts/tests
+scripts/check-docs.sh --source-only --strict
+scripts/check-catalogue.sh
+scripts/website/build.sh
+python3 scripts/website/gen_redirects.py --site docs/_site
+scripts/check-docs.sh --site docs/_site --strict
+```
+
+The source checker inventories tracked Markdown. Stage an intentionally added
+public document before checking it; private drafts stay untracked. The build
+adds untracked and ignored documentation paths to its exclusions before Jekyll
+reads page contents. Review desktop/mobile rendering and keyboard navigation
+when changing templates, CSS, or navigation. A passing checker is structural
+evidence; it does not establish that editorial claims are true.
