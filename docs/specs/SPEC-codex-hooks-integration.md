@@ -1,4 +1,13 @@
+---
+title: "SPEC: Codex hooks integration"
+status: shipped
+---
+
 # SPEC: Codex hooks integration
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: [codex_hook.rs](../../crates/phronesis-mcp/src/codex_hook.rs) + [codex_hook/](../../crates/phronesis-mcp/src/codex_hook); tests: [codex_hook_integration.rs](../../crates/phronesis-mcp/tests/codex_hook_integration.rs), [codex_fail_closed_parity.rs](../../crates/phronesis-mcp/tests/codex_fail_closed_parity.rs). First release containing the adapter: `v0.22.0` (tag-derived).
+
+
 
 **Status:** implemented via project-local hooks
 **Authors:** Andrew Waterman, Codex

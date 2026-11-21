@@ -1,4 +1,15 @@
+---
+title: "Phronesis: Coverage + Verification Evidence Graph (Rust Sketch)"
+status: partial
+---
+
 # Phronesis: Coverage + Verification Evidence Graph (Rust Sketch)
+
+> **Lifecycle status: partially implemented** — this vision document was decomposed into three specs; of those, [SPEC-coverage-evidence.md](SPEC-coverage-evidence.md) and [SPEC-property-ontology.md](SPEC-property-ontology.md) are shipped (code-verified on 2026-11-20) and the Verus harness exists standalone at [verification/harness.rs](../../crates/phronesis-mcp/verification/harness.rs) (first contained tag `v0.36.0`, tag-derived). Gaps: the full evidence-graph requirements (§15–§24) remain open; see [SPEC-verification-artifact-generation.md](SPEC-verification-artifact-generation.md).
+>
+> Historical note: the body's “Retained as the vision document” label (2026-09-23) stands as written.
+
+
 
 > **Status (2026-09-23):** Retained as the vision document. Decomposed for
 > implementation into three specs, grounded in an engine-capability audit of

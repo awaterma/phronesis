@@ -1,4 +1,13 @@
+---
+title: "Implementation decisions: Rust ownership evidence"
+status: shipped
+---
+
 # Implementation decisions: Rust ownership evidence
+
+> **Lifecycle status: shipped (companion record)** — decisions appendix for [SPEC-rust-ownership-evidence.md](SPEC-rust-ownership-evidence.md); the parent's status was re-verified against code on 2026-11-20 (see that header). The parent's earlier “first released in 0.29.0 per CHANGELOG” claim is now backed by tag-derived evidence (`v0.29.0`).
+
+
 
 **Status:** Binding for Phase One implementation
 **Governs:** [`SPEC-rust-ownership-evidence.md`](./SPEC-rust-ownership-evidence.md)

@@ -1,4 +1,13 @@
+---
+title: "SPEC: Evidence-backed Rust ownership graph"
+status: shipped
+---
+
 # SPEC: Evidence-backed Rust ownership graph
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20. Implementation: [graph/ownership/extract.rs](../../crates/phronesis-mcp/src/graph/ownership/extract.rs), [graph/ownership/provider.rs](../../crates/phronesis-mcp/src/graph/ownership/provider.rs), [graph/ownership/config.rs](../../crates/phronesis-mcp/src/graph/ownership/config.rs), and the `query_ownership_evidence` tool in [server.rs](../../crates/phronesis-mcp/src/server.rs); corpus test [ownership_corpus.rs](../../crates/phronesis-mcp/tests/ownership_corpus.rs); user-facing explanation in [OWNERSHIP-EVIDENCE.md](../architecture/OWNERSHIP-EVIDENCE.md). First release containing the ownership module: `v0.29.0` (tag-derived; agrees with the earlier changelog-derived claim).
+
+
 
 **Status:** Draft for implementation
 **Audience:** Fable and Phronesis maintainers

@@ -1,4 +1,13 @@
+---
+title: "SPEC: agent lifecycle events — sub-agent start/stop, interrupts, mid-turn context, corrections, kalpas"
+status: shipped
+---
+
 # SPEC: agent lifecycle events — sub-agent start/stop, interrupts, mid-turn context, corrections, kalpas
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: [lifecycle/event.rs](../../crates/phronesis-mcp/src/lifecycle/event.rs), [lifecycle/state.rs](../../crates/phronesis-mcp/src/lifecycle/state.rs), [lifecycle/record.rs](../../crates/phronesis-mcp/src/lifecycle/record.rs), [lifecycle/outcome.rs](../../crates/phronesis-mcp/src/lifecycle/outcome.rs), [claude_hook.rs](../../crates/phronesis-mcp/src/claude_hook.rs); tests: [lifecycle_state.rs](../../crates/phronesis-mcp/tests/lifecycle_state.rs), [lifecycle_concurrency.rs](../../crates/phronesis-mcp/tests/lifecycle_concurrency.rs), [lifecycle_outcome.rs](../../crates/phronesis-mcp/tests/lifecycle_outcome.rs), [kalpa_integration.rs](../../crates/phronesis-mcp/tests/kalpa_integration.rs), [unit_cli_integration.rs](../../crates/phronesis-mcp/tests/unit_cli_integration.rs). First release containing the lifecycle module: `v0.35.0` (tag-derived; the earlier “0.35.0 per CHANGELOG topic match” claim agrees but was not code-verified).
+
+
 
 **Status:** draft, revised after two rounds of adversarial review
               (2026-09-18, 2026-09-19)

@@ -1,4 +1,13 @@
+---
+title: "SPEC: journey_filtered_since_ge — distance counted over a subset"
+status: shipped
+---
+
 # SPEC: journey_filtered_since_ge — distance counted over a subset
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: `journey_filtered_since_ge` in [journey/derive.rs](../../crates/phronesis-mcp/src/journey/derive.rs) with a test named for this spec in [journey_derive.rs](../../crates/phronesis-mcp/tests/journey_derive.rs). First release containing the predicate: `v0.16.1` (tag-derived from the introducing commit).
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

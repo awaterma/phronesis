@@ -1,4 +1,13 @@
+---
+title: "SPEC: Python pack expansion and Python governance roadmap"
+status: shipped
+---
+
 # SPEC: Python pack expansion and Python governance roadmap
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: Python pack rules in [rules_python.rs](../../crates/phronesis-mcp/src/init/rules_python.rs) with pack tests in [init/tests/pack_tests.rs](../../crates/phronesis-mcp/src/init/tests/pack_tests.rs). First release containing the current rules module: `v0.36.0` (tag-derived; the module was split out of init.rs, so the earlier “0.31.0 per CHANGELOG” claim was not code-verified and is left uncited).
+
+
 
 **Status:** draft  
 **Authors:** Codex, Andrew Waterman  

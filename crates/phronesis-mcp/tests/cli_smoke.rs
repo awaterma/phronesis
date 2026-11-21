@@ -392,7 +392,7 @@ fn interaction_context_is_canonical_and_turn_context_remains_an_alias() {
 ///
 /// Deliberately NOT checked: `CHANGELOG.md` and `.phronesis/wiki/decisions/`
 /// are historical records — a release note or an ADR describing what was
-/// true then must keep saying so. `docs/specs/` and `docs/superpowers/`
+/// true then must keep saying so. `docs/specs/` and `docs/archive/designs/`
 /// describe this very migration.
 #[test]
 fn no_shipped_artifact_names_the_removed_drift_tools() {
