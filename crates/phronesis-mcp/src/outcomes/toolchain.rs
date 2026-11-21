@@ -1736,12 +1736,15 @@ mod tests {
     }
 
     #[test]
-    fn the_project_registry_carries_a_compiling_kani_def() {
-        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("repo root");
-        let defs = registry(repo);
+    fn example_registry_carries_a_compiling_kani_def() {
+        let project = tempfile::tempdir().expect("project fixture");
+        std::fs::create_dir(project.path().join(".phronesis")).expect("state directory");
+        std::fs::write(
+            project.path().join(".phronesis/toolchains.json"),
+            include_str!("../../../../examples/phronesis/toolchains.json"),
+        )
+        .expect("install illustrative toolchain configuration");
+        let defs = registry(project.path());
         let kani = defs
             .iter()
             .find(|d| d.def.id == "kani")
