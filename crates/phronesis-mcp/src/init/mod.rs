@@ -7,8 +7,8 @@
 //! - `.gemini/settings.json`                    — Gemini CLI MCP + hooks
 //! - `.phronesis/rules.json`                    — starter rule pack
 //! - `.phronesis/durable.md`                    — re-injected directives
-//! - `.phronesis/wiki/decisions/README.md`     — ADR scaffold
-//! - `.gitignore`                                — log/backup paths + wiki carveout
+//! - `docs/decisions/README.md`                — canonical ADR scaffold
+//! - `.gitignore`                                — anchored `/.phronesis/` whole-directory ignore
 //!
 //! Idempotent and non-destructive by default. Existing permissions, hooks,
 //! and MCP servers are preserved; only our entries are added or refreshed.

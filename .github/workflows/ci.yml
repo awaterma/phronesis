@@ -25,6 +25,14 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # Agent state is local-only (`/.phronesis/` is ignored), so a clean
+      # clone must provision explicitly before the audit gate: reviewed
+      # presets from config/phronesis/, then starter rules from the shipped
+      # packs. The audit must never silently pass on zero rules.
+      - name: Provision agent state from tracked presets
+        run: cargo run -p phronesis-mcp -- provision
+      - name: Provision starter rules from shipped packs
+        run: cargo run -p phronesis-mcp -- init --rules-only --packs llm,rust,rhai,typescript,confidence
       - name: Audit repository rules (blocking findings fail CI)
         run: cargo run -p phronesis-mcp -- audit --fail-on block
       # Feature configs must not bit-rot: the embedding-host gate on the
