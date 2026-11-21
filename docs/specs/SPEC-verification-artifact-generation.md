@@ -1,4 +1,15 @@
+---
+title: "SPEC: Property-driven verification artifact generation (safety-gated)"
+status: partial
+---
+
 # SPEC: Property-driven verification artifact generation (safety-gated)
+
+> **Lifecycle status: partially implemented** — reconciled against code on 2026-11-20. Shipped part: the Verus verification harness for coverage-store invariants exists standalone at [verification/harness.rs](../../crates/phronesis-mcp/verification/harness.rs) with [run-verification.sh](../../crates/phronesis-mcp/verification/run-verification.sh) and a result record ([RESULT.md](../../crates/phronesis-mcp/verification/RESULT.md)); its preconditions (`SPEC-coverage-evidence.md`, `SPEC-property-ontology.md`) are shipped. Gaps: the host-side verification-artifact generation surface this spec designs was not verified against code this pass.
+>
+> Historical note: the body's “Approved for implementation” label (2026-09-24) is the original record; approval to implement is not evidence of full implementation.
+
+
 
 **Status:** Approved for implementation — revised per `REVIEW-c-spec-design.md` (cross-model design review: deepseek-v4-pro + glm-5.3). Preconditions met: `SPEC-coverage-evidence.md` (A) and `SPEC-property-ontology.md` (B) are landed.
 **Author:** awaterma (agent-drafted, adapted from `REQUIREMENTS-phronesis-coverage-verification-rust-sketch.md`); revised per the pre-implementation cross-model review

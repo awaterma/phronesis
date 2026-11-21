@@ -1,4 +1,15 @@
+---
+title: "SPEC: Memory → Rules workflow"
+status: partial
+---
+
 # SPEC: Memory → Rules workflow
+
+> **Lifecycle status: partially implemented** — reconciled against code on 2026-11-20. Shipped part: memory-drift detection in [memory_drift.rs](../../crates/phronesis-mcp/src/memory_drift.rs) consolidated into [drift/registry.rs](../../crates/phronesis-mcp/src/drift/registry.rs) and the rule-writing surface (`extract_rules`, `add_rule`) in [server.rs](../../crates/phronesis-mcp/src/server.rs). Gaps: the automated memory-to-rules conversion workflow this spec designs was not found; the loop is currently human-driven.
+>
+> Historical note: the body's “Status: draft” (2026-05-26) is the original draft-stage record.
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

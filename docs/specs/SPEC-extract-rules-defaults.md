@@ -1,4 +1,13 @@
+---
+title: "SPEC: extract_rules — sane defaults, message cleanup, condition fan-out"
+status: shipped
+---
+
 # SPEC: extract_rules — sane defaults, message cleanup, condition fan-out
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: [diff_extract.rs](../../crates/phronesis-mcp/src/diff_extract.rs) (markdown extraction, condition fan-out, message cleanup) with tests in [extraction.rs](../../crates/phronesis-mcp/tests/extraction.rs) and the markdown BDD feature [markdown_extraction.feature](../../crates/phronesis-mcp/tests/features/markdown_extraction.feature). The module has existed since the initial release (first contained tag `v0.9.1`, tag-derived); the earlier “first released in 0.16.2 per CHANGELOG” claim was not code-verified and is left uncited.
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

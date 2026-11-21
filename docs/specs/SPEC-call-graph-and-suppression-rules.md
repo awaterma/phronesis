@@ -1,4 +1,15 @@
+---
+title: "SPEC: call-graph reachability, suppression rules, and worktree state"
+status: partial
+---
+
 # SPEC: call-graph reachability, suppression rules, and worktree state
+
+> **Lifecycle status: partially implemented** — reconciled against code on 2026-11-20. Shipped part: the `calls` edge and self-call resolution in [graph/derive.rs](../../crates/phronesis-mcp/src/graph/derive.rs) (edge handling and a dedicated same-type self-call test), plus `tested_by`/`test_reaches` reach via [graph/query.rs](../../crates/phronesis-mcp/src/graph/query.rs). Gaps: no implementation of suppression rules or worktree-state tracking was found this pass. First release containing the `calls` substrate: `v0.23.0` (tag-derived, [graph/derive.rs](../../crates/phronesis-mcp/src/graph/derive.rs)).
+>
+> Historical note: the body's “Status: proposed” (2026-08-08) predates the shipped substrate; the unshipped parts remain proposals.
+
+
 
 **Status:** proposed
 **Date:** 2026-08-08

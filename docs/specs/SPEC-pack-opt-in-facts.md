@@ -1,4 +1,13 @@
+---
+title: "SPEC: pack opt-in markers as facts (pack-level supersession)"
+status: shipped
+---
+
 # SPEC: pack opt-in markers as facts (pack-level supersession)
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: pack opt-in markers in [init/types.rs](../../crates/phronesis-mcp/src/init/types.rs) with pack tests in [init/tests/pack_tests.rs](../../crates/phronesis-mcp/src/init/tests/pack_tests.rs). First release containing the current pack-types module: `v0.36.0` (tag-derived; module history includes the init.rs split, so an earlier ship date for the concept is possible and left uncited).
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

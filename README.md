@@ -15,7 +15,7 @@ Visit [Discussions](https://github.com/awaterma/phronesis/discussions) for Q&A,
 ideas, and show-and-tell, or [Issues](https://github.com/awaterma/phronesis/issues)
 for reproducible bugs. Please keep private source code and credentials private.
 
-[Public community signals](docs/COMMUNITY-SIGNALS.md) explains our weekly
+[Public community signals](docs/guides/COMMUNITY-SIGNALS.md) explains our weekly
 snapshots and why downloads and search hits are not user counts.
 
 ## For AI Coding Agents
@@ -23,7 +23,7 @@ snapshots and why downloads and search hits are not user counts.
 Phronesis provides persistent code graphs, rule-based inference, provenance,
 and verification evidence through MCP. If you are an AI coding agent working
 on code analysis, change impact, test selection, or verification, see
-[**Phronesis for Coding Agents**](docs/FOR_AGENTS.md) to decide whether it
+[**Phronesis for Coding Agents**](docs/guides/FOR_AGENTS.md) to decide whether it
 helps with your task — including a read-only way to evaluate it on your own
 repository. (Working *on* Phronesis itself? See [`AGENTS.md`](AGENTS.md).)
 
@@ -34,7 +34,7 @@ repository. (Working *on* Phronesis itself? See [`AGENTS.md`](AGENTS.md).)
 shows built-in and installed packs; `list_language_packs {}` provides the same
 read-only inventory to a connected MCP client. External authors can use
 bundled grammars, queries, bounded Rhai, fixtures, and namespaced rules without
-changing the core adapter. See [Language packs](docs/LANGUAGE-PACKS.md) and the
+changing the core adapter. See [Language packs](docs/reference/LANGUAGE-PACKS.md) and the
 [query-only/Rhai Python starter](examples/language-packs/python-starter/).
 Source relationships are static evidence; run the actual compiler and tests.
 
@@ -98,7 +98,7 @@ Java discovers Maven and Bazel compilation units and reports dependencies
 between declared packages. The existing `structural` pack warns about package
 import cycles. Build-file edits refresh unchanged importers; diagnostics expose
 unsupported build constructs and unresolved project imports. See the
-[Java design and limitations](docs/superpowers/specs/2026-08-03-java-code-graph-design.md)
+[Java design and limitations](docs/archive/designs/2026-08-03-java-code-graph-design.md)
 for the classpath approximation and corpus-validation requirements.
 
 The default `base` is intentionally language-neutral: it includes LLM,
@@ -130,13 +130,9 @@ not proof that documentation or enforcement is wrong.
 
 ## Documentation
 
-Rendered on GitHub Pages: **[awaterma.github.io/phronesis](https://awaterma.github.io/phronesis/)**
+All documentation lives in one canonical hierarchy under [`docs/`](docs/README.md): tutorials, guides, reference, architecture, decisions, specs, contributing, and archive — start at the [documentation index](docs/README.md). Rendered on GitHub Pages: **[awaterma.github.io/phronesis](https://awaterma.github.io/phronesis/)** ([explainer](https://awaterma.github.io/phronesis/explainer.html), [catalogue](https://awaterma.github.io/phronesis/catalogue.html)).
 
-- [**Loop-Based Agent Programming**](docs/loop-programming-guide.md) — A guide to governing the iterative propose/act/observe loop so it doesn't drift across long sessions.
-- [**The Explainer**](https://awaterma.github.io/phronesis/explainer.html) — A long-form technical essay on the engine, the RETE algorithm, and the design intent. ([source](docs/explainer.html))
-- [**The Catalogue**](https://awaterma.github.io/phronesis/catalogue.html) — A generated visual reference of all 95 starter rules across the language, structural, confidence, and agent-governance packs. ([source](docs/catalogue.html))
-- [**Command Reference**](crates/phronesis-mcp/CLAUDE.md) — The full CLI surface and hook wiring details.
-- [**Specs**](docs/specs/) — Architectural roadmaps and technical debt management plans.
+Highlights: [**Loop-Based Agent Programming**](docs/guides/loop-programming-guide.md) · [**Phronesis for Coding Agents**](docs/guides/FOR_AGENTS.md) · [**Command Reference**](crates/phronesis-mcp/CLAUDE.md) · [**Specs**](docs/specs/README.md) · [**Contributing**](docs/contributing/README.md)
 
 ## Quick Start
 

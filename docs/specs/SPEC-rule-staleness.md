@@ -1,4 +1,15 @@
+---
+title: "SPEC: rule-staleness — rules that outlived the code they describe"
+status: shipped
+---
+
 # SPEC: rule-staleness — rules that outlived the code they describe
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: durable rule-to-code bindings with referent-gone staleness (`BindingState::Stale`, `stale_at`) in [graph/bindings.rs](../../crates/phronesis-mcp/src/graph/bindings.rs), reconciled in [graph/sync/index.rs](../../crates/phronesis-mcp/src/graph/sync/index.rs) and surfaced through [drift/registry.rs](../../crates/phronesis-mcp/src/drift/registry.rs); tests in [graph/sync/tests.rs](../../crates/phronesis-mcp/src/graph/sync/tests.rs). First release containing the bindings module: `v0.26.0` (tag-derived). Scope beyond referent-gone binding staleness was not exhaustively re-audited this pass.
+>
+> Historical note: the body's original status label is retained below as history; no changelog-derived status had been claimed for this spec before.
+
+
 
 **Status:** draft (revision 2 — adversarial review by glm-5.2 and codex, 2026-08-04)
 **Authors:** Claude, Andrew Waterman

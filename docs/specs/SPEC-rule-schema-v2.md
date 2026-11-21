@@ -1,4 +1,13 @@
+---
+title: "SPEC: Rule schema v2 — readable wire format + OR operator"
+status: shipped
+---
+
 # SPEC: Rule schema v2 — readable wire format + OR operator
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20. Implementation: the v2 disk format in [rules_file.rs](../../crates/phronesis-mcp/src/rules_file.rs) with fail-closed load validation, and the `migrate-rules` conversion in [main.rs](../../crates/phronesis-mcp/src/main.rs) (`handle_migrate_rules`). First release containing `migrate-rules`: `v0.17.0` (tag-derived from the introducing commit; no changelog-derived claim was previously made for this spec).
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

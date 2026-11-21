@@ -86,7 +86,7 @@ pub(super) struct HookPayload {
 }
 
 /// Keys whose string value is free human or model text and must never reach
-/// `payloads.jsonl`, which `docs/payload-corpus-promotion.md` copies into a
+/// `payloads.jsonl`, which `docs/guides/payload-corpus-promotion.md` copies into a
 /// committed tree. `prompt` covers Claude/Codex `UserPromptSubmit`, Gemini
 /// `BeforeAgent`, and Gemini `invoke_agent`'s `tool_input.prompt`;
 /// `prompt_response` covers Gemini `AfterAgent`; `last_assistant_message`

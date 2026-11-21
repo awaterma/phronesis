@@ -7,7 +7,7 @@ MCP server wrapping the phronesis RETE rules engine for rules-bounded LLM intera
 `phr-mcp init --packs go` selects the bundled Go starter rule and toolchains.
 `phr-mcp pack validate <dir>`, `pack install <dir>`, `pack remove <id>`, and `pack list --json`
 operate on bounded declared assets; MCP `list_language_packs` exposes the same
-live inventory. See `../../docs/LANGUAGE-PACKS.md` and the external
+live inventory. See `../../docs/reference/LANGUAGE-PACKS.md` and the external
 `../../examples/language-packs/python-starter/` example. Pack facts and graph
 edges are source-level evidence, not a compiler or observed coverage result.
 
@@ -1034,7 +1034,7 @@ cargo test
 
 ## Versioning
 
-Semver, automated by **release-plz** (see `docs/RELEASING.md`). Version
+Semver, automated by **release-plz** (see `docs/contributing/RELEASING.md`). Version
 bumps, git tags, and crates.io publishing are no longer done by hand:
 release-plz watches conventional commits on `main`, opens/updates a
 Release PR (the human approval gate), and merging that PR publishes all

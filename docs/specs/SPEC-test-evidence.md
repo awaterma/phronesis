@@ -1,4 +1,15 @@
+---
+title: "SPEC: Unified test evidence for functions"
+status: shipped
+---
+
 # SPEC: Unified test evidence for functions
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20. Implementation: unified test evidence joins `tested_by`/`test_reaches` edges ([graph/derive.rs](../../crates/phronesis-mcp/src/graph/derive.rs), [graph/query.rs](../../crates/phronesis-mcp/src/graph/query.rs)) with coverage observations ([coverage/hydrate.rs](../../crates/phronesis-mcp/src/coverage/hydrate.rs), [coverage/store.rs](../../crates/phronesis-mcp/src/coverage/store.rs)); decision D3 (stale hits never count) is enforced by `coverage_observation_stale` handling in [coverage/select.rs](../../crates/phronesis-mcp/src/coverage/select.rs). First releases: `tested_by` substrate `v0.23.0`, coverage hydration `v0.36.0` (both tag-derived); the earlier “0.29.0 per CHANGELOG” claim was not code-verified and is left uncited.
+>
+> Historical note: the body's “Draft for review — not approved for implementation” label is the original draft-stage record and does not describe today's tree.
+
+
 
 **Status:** Draft for review — not approved for implementation  
 **Scope:** `crates/phronesis-mcp` host only — no engine changes  

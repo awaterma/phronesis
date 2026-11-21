@@ -1,4 +1,15 @@
+---
+title: "SPEC: Starter-rule evidence modernization"
+status: partial
+---
+
 # SPEC: Starter-rule evidence modernization
+
+> **Lifecycle status: partially implemented** — reconciled against code on 2026-11-20. Known state: the starter rule inventory in [rules_other.rs](../../crates/phronesis-mcp/src/init/rules_other.rs) and [rules_rust.rs](../../crates/phronesis-mcp/src/init/rules_rust.rs) carries evidence-named rule ids (for example `warn-untested-risky-call`, `warn-import-cycle`, `block-rhai-inline-eval-string`), consistent with this spec's direction. Gaps: this pass did not exhaustively re-audit all ten named rules' evidence bases and severities against the spec's table.
+>
+> Historical note: the body's “Status: proposed” (2026-08-19) predates the modernized ids; the unverified remainder stays proposed.
+
+
 
 **Status:** proposed
 **Date:** 2026-08-19

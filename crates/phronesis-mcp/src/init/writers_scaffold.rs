@@ -17,7 +17,7 @@ use super::types::*;
 /// (1825 B) exceeded `charter_max_bytes` and was dropped by
 /// `kind_ceiling` on every session — never reaching the model at all,
 /// while its bulk displaced rules. Reference material now lives in
-/// `docs/participatory-governance.md`; only what the model must act on
+/// `docs/architecture/participatory-governance.md`; only what the model must act on
 /// belongs here. Measure with `phr-mcp context inspect --event session`
 /// before adding to it.
 pub(crate) const DEFAULT_DURABLE_MD: &str = r#"# Durable Directives
