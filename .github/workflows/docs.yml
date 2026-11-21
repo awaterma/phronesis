@@ -59,8 +59,8 @@ jobs:
         run: scripts/check-catalogue.sh
       - name: Source checks (strict gate)
         run: scripts/check-docs.sh --source-only --strict --json
-      - name: Build site (locked environment)
-        run: DOCS_BUILD_NO_DOCKER=1 scripts/website/build.sh
+      - name: Build site and verify private-draft exclusion
+        run: DOCS_BUILD_NO_DOCKER=1 scripts/website/test-private-draft.sh
       - name: Generate migration redirects
         run: python3 scripts/website/gen_redirects.py --site docs/_site
       - name: Rendered checks (strict gate)

@@ -101,7 +101,9 @@ untracked files (including ignored drafts) by path only and adds them to
 Jekyll's exclusions before reading pages. Source checks likewise inspect
 tracked Markdown only. Stage a deliberately added public page before
 previewing it; do not stage private drafts. Direct `bundle exec jekyll build`
-does not provide this local-draft protection.
+does not provide this local-draft protection. CI invokes
+`scripts/website/test-private-draft.sh`, which exercises the real build with
+an unreadable synthetic draft and verifies its absence from the artifact.
 
 `docs/archive/`, `docs/superpowers/`, agent-local state (`.phronesis/`),
 and raw run logs are excluded from the site build. Only the archive belongs in Git; the

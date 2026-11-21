@@ -17,8 +17,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SITE_DIR="$REPO_ROOT/docs"
-EXCLUSIONS_FILE="$(mktemp "${TMPDIR:-/tmp}/phronesis-site-policy.XXXXXX")"
-trap 'rm -f "$EXCLUSIONS_FILE"' EXIT
+EXCLUSIONS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/phronesis-site-policy.XXXXXX")"
+# Jekyll chooses its parser by extension even when the content is valid YAML.
+EXCLUSIONS_FILE="$EXCLUSIONS_DIR/exclusions.yml"
+trap 'rm -f "$EXCLUSIONS_FILE"; rmdir "$EXCLUSIONS_DIR"' EXIT
 python3 "$REPO_ROOT/scripts/website/local_exclusions.py" "$REPO_ROOT" > "$EXCLUSIONS_FILE"
 DIGEST_FILE="$REPO_ROOT/docs/.build-image-digest"
 DIGEST="$(cat "$DIGEST_FILE" 2>/dev/null | tr -d '[:space:]')"
@@ -44,13 +46,13 @@ rm -rf "$SITE_DIR/_site"
 if command -v docker >/dev/null 2>&1 && [ "${DOCS_BUILD_NO_DOCKER:-0}" != "1" ]; then
   docker run --rm \
     -v "$REPO_ROOT":/repo \
-    -v "$EXCLUSIONS_FILE":/site-policy.json:ro \
+    -v "$EXCLUSIONS_FILE":/site-policy.yml:ro \
     -v phronesis-docs-bundle:/usr/local/bundle \
     -e BUNDLE_FROZEN=true \
     -e JEKYLL_ENV=production \
     -w /repo/docs \
     "$IMAGE" \
-    sh -c 'bundle install --quiet && bundle exec jekyll build --strict_front_matter -s /repo/docs -d /repo/docs/_site --config /repo/docs/_config.yml,/site-policy.json'
+    sh -c 'bundle install --quiet && bundle exec jekyll build --strict_front_matter -s /repo/docs -d /repo/docs/_site --config /repo/docs/_config.yml,/site-policy.yml'
   exit $?
 fi
 
