@@ -9,7 +9,7 @@ permalink: /contributing/website.html
 
 # Documentation website contract
 
-The site source is `docs/`. GitHub reading and website reading use the same
+The site source is the tracked content under `docs/`. GitHub reading and website reading use the same
 files: markdown that is fine on GitHub is fine on the website, and the build
 converts GitHub-style relative links to rendered URLs.
 
@@ -95,6 +95,13 @@ fixtures for reproduced checker failures live in
 `scripts/tests/` (`python3 -m unittest discover -s scripts/tests`).
 
 ## Excluded from the published artifact
+
+Use `scripts/website/build.sh` for local previews as well as CI. It inventories
+untracked files (including ignored drafts) by path only and adds them to
+Jekyll's exclusions before reading pages. Source checks likewise inspect
+tracked Markdown only. Stage a deliberately added public page before
+previewing it; do not stage private drafts. Direct `bundle exec jekyll build`
+does not provide this local-draft protection.
 
 `docs/archive/`, `docs/superpowers/`, agent-local state (`.phronesis/`),
 and raw run logs are excluded from the site build. Only the archive belongs in Git; the

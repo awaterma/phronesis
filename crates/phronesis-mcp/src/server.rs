@@ -1368,7 +1368,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Detect drift between written guidance and enforced rules across every corpus: root and package-level CLAUDE.md/AGENTS.md imperatives, Claude Code auto-memory entries, ADR decisions under .phronesis/wiki/decisions/, and rules naming code the graph no longer defines. Read-only, heuristic, no LLM call — output is a triage list, not ground truth. `source` selects one of \"claude_md\", \"memory\", \"wiki\", \"code\", or \"all\" (default). With \"all\" the response is a bounded summary: use a single source plus a higher `limit` for detail. A corpus that does not exist is reported as unavailable rather than failing the call. Optional: `limit` (default 5, max 50), `format` (\"json\" default or \"table\"), `suggest` (default false — set true to get a draft rule per item, which is large), `memory_dir`, `wiki_dir`."
+        description = "Detect drift between written guidance and enforced rules across every corpus: root and package-level CLAUDE.md/AGENTS.md imperatives, Claude Code auto-memory entries, ADR decisions under docs/decisions/ (legacy .phronesis/wiki/decisions/ still read), and rules naming code the graph no longer defines. Read-only, heuristic, no LLM call — output is a triage list, not ground truth. `source` selects one of \"claude_md\", \"memory\", \"wiki\", \"code\", or \"all\" (default). With \"all\" the response is a bounded summary: use a single source plus a higher `limit` for detail. A corpus that does not exist is reported as unavailable rather than failing the call. Optional: `limit` (default 5, max 50), `format` (\"json\" default or \"table\"), `suggest` (default false — set true to get a draft rule per item, which is large), `memory_dir`, `wiki_dir`."
     )]
     async fn get_drift(
         &self,
@@ -1764,7 +1764,7 @@ impl EpistemeMcp {
 }
 
 /// The `instructions` string a connected MCP client receives in
-/// `ServerInfo`: a compact version of `docs/FOR_AGENTS.md`. Every backticked
+/// `ServerInfo`: a compact version of `docs/guides/FOR_AGENTS.md`. Every backticked
 /// snake_case name here must be a registered tool — see
 /// `server_instructions_tests`.
 /// Default cap on `select_tests` results: static reach is transitive, so a

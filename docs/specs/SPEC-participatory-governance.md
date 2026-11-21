@@ -1,4 +1,13 @@
+---
+title: "SPEC: participatory governance — LLM as rule-evolution participant"
+status: partial
+---
+
 # SPEC: participatory governance — LLM as rule-evolution participant
+
+> **Lifecycle status: partially implemented** — reconciled against code on 2026-11-20. Shipped part: decision scaffolding with `enforces` frontmatter in [wiki.rs](../../crates/phronesis-mcp/src/wiki.rs), the `decision new` command in [main.rs](../../crates/phronesis-mcp/src/main.rs), and the durable-template pointer in [writers_scaffold.rs](../../crates/phronesis-mcp/src/init/writers_scaffold.rs); the workflow prose it designs lives in [participatory-governance.md](../architecture/participatory-governance.md). Gaps: the end-to-end rule-evolution loop is process-driven, not automated as this spec describes.
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

@@ -109,6 +109,22 @@ def run_source(repo, *args):
 
 
 class SourceFixtureTests(unittest.TestCase):
+    def test_untracked_and_ignored_private_drafts_are_not_read_or_built(self):
+        repo = make_repo(files={"docs/_config.yml": "exclude: [archive]\n"})
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "add", "docs", "Cargo.toml", "CHANGELOG.md"], check=True)
+        (repo / ".gitignore").write_text("docs/specs/private-ignored.md\n")
+        for filename in ["private.md", "private-ignored.md"]:
+            (repo / "docs/specs" / filename).write_bytes(b"---\ninvalid: [\n\xffprivate")
+        _, errors, _, _ = run_source(repo, "--strict")
+        self.assertEqual([], errors, errors)
+        result = subprocess.run([
+            sys.executable, str(Path(__file__).resolve().parents[1] / "website/local_exclusions.py"),
+            str(repo)], check=True, capture_output=True, text=True)
+        self.assertIn("specs/private.md", result.stdout)
+        self.assertIn("specs/private-ignored.md", result.stdout)
+        self.assertIn("archive", result.stdout)
+
     def test_adr_frontmatter_is_valid_without_website_keys(self):
         repo = make_repo({"docs/decisions/2026-01-01-choice.md": ADR_OK})
         code, errors, warnings, _ = run_source(repo, "--strict")

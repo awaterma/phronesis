@@ -1,6 +1,6 @@
 //! Compiling a validated pack's queries/script, and running them against one
 //! file: `compile_pack` + `extract`
-//! (`docs/superpowers/specs/2026-10-17-go-and-language-packs-design.md`
+//! (`docs/archive/designs/2026-10-17-go-and-language-packs-design.md`
 //! §"Record and runtime contract").
 
 use std::collections::HashMap;

@@ -60,10 +60,7 @@ jobs:
       - name: Source checks (strict gate)
         run: scripts/check-docs.sh --source-only --strict --json
       - name: Build site (locked environment)
-        run: |
-          cd docs
-          rm -rf _site
-          JEKYLL_ENV=production bundle exec jekyll build --strict_front_matter
+        run: DOCS_BUILD_NO_DOCKER=1 scripts/website/build.sh
       - name: Generate migration redirects
         run: python3 scripts/website/gen_redirects.py --site docs/_site
       - name: Rendered checks (strict gate)

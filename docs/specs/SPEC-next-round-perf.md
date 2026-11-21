@@ -1,4 +1,12 @@
+---
+title: "SPEC: Phronesis Performance — Next Round"
+status: partial
+---
+
 # SPEC: Phronesis Performance — Next Round
+
+> **Lifecycle status: partially implemented, actively maintained** — this is the current performance ledger referenced by [AGENTS.md](../../AGENTS.md) (verified results, false leads, and open items). Reconciled on 2026-11-20: the ledger itself records what is verified versus open; profiling entry points exist at [profile_assert_fact.rs](../../crates/phronesis/examples/profile_assert_fact.rs) and [profile_audit.rs](../../crates/phronesis-mcp/examples/profile_audit.rs). No first-release claim is made here; individual items carry their own verified/false-lead labels.
+
 
 **Status:** proposed
 **Authors:** Andrew Waterman, Claude

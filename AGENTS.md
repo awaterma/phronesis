@@ -2,7 +2,7 @@
 
 > This file is for agents working **on** Phronesis. If you are an agent
 > deciding whether to **use** Phronesis on another codebase, read
-> [`docs/FOR_AGENTS.md`](docs/FOR_AGENTS.md).
+> [`docs/guides/FOR_AGENTS.md`](docs/guides/FOR_AGENTS.md).
 
 ## Quick Overview
 
@@ -23,7 +23,7 @@ This is a Rust workspace with five crates:
 `phr-mcp init --packs go` selects the Go starter. `phr-mcp pack validate
 <dir>`, `pack install <dir>`, `pack remove <id>`, and `pack list --json` operate on declared,
 validated assets; MCP `list_language_packs` reports the same live inventory.
-Contributors should use [docs/LANGUAGE-PACKS.md](docs/LANGUAGE-PACKS.md) and
+Contributors should use [docs/reference/LANGUAGE-PACKS.md](docs/reference/LANGUAGE-PACKS.md) and
 [the Python starter](examples/language-packs/python-starter/). Pack facts and
 static graph edges are advisory; compile and test outcomes require real runs.
 
@@ -183,7 +183,7 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `drift` | Consolidated guidance/rule drift across `claude_md`, `memory`, `wiki`, and `code` sources |
 | `claude-md-drift`, `memory-drift`, `wiki-drift` | Frozen compatibility commands for the original single-source reports |
 | `context list\|acknowledge\|retract\|inspect\|predicates\|stats` | Inspect and measure token-aware durable context: list, acknowledge, and retract rule-emitted capsules, render the configured payload for one event, list the nudge predicate allowlist, and summarize payload cost and latency |
-| `decision new <slug>` | Scaffold an ADR page under `.phronesis/wiki/decisions/` |
+| `decision new <slug>` | Scaffold an ADR page under `docs/decisions/` (legacy `.phronesis/wiki/decisions/` when canonical is absent) |
 | `migrate-rules <path>` | Convert v1 rules.json to v2 in place |
 | `migrate-durable [path]` | Bring `.phronesis/durable.md` up to the current shipped template — rewrites only a file matching a known prior template verbatim, leaves customized files alone, backs up to `durable.md.bak` |
 | `migrate-extracted-rules <path>` | Rewrite pre-0.14.0 `extract_rules` output in a rules.json — strip bracketed metadata prefixes, demote `block` to `warn`, demote rules the Rust pack already enforces structurally to `log`; idempotent, backs up to `rules.json.bak` |
@@ -631,6 +631,13 @@ set_section_context { "file": "docs/RUST-PATTERNS-GUIDE.md", "section": "API Des
 ### CI/CD Integration
 
 ```bash
+# Provision agent state from tracked presets (config/phronesis/)
+phr-mcp provision
+
+# Provision starter rules from shipped packs (clean clones have no
+# local rules.json — /.phronesis/ is wholly ignored)
+phr-mcp init --rules-only --packs llm,rust,rhai,typescript,confidence
+
 # Fail build on blocking violations
 phr-mcp audit --fail-on block
 
@@ -699,12 +706,14 @@ cargo run --example profile_audit -p phronesis-mcp
 
 ## Documentation
 
+Documentation lives in one canonical hierarchy under `docs/` — tutorials, guides, reference, architecture, decisions, specs, contributing, archive — indexed from [`docs/README.md`](docs/README.md). When changing documentation or documented public behavior, use the `maintain-phronesis-docs` skill (`.agents/skills/maintain-phronesis-docs/SKILL.md`) and follow the policy in [`docs/contributing/documentation.md`](docs/contributing/documentation.md) (categories, spec lifecycle statuses, historical notices, `docs/migration-map.json` for every move). Decisions (ADRs) are canonical in `docs/decisions/`; see [docs/decisions/README.md](docs/decisions/README.md).
+
 ### Primary Sources
 
 | Document | Purpose |
 |----------|---------|
 | `README.md` | Project overview, quick start |
-| `docs/FOR_AGENTS.md` | Discovery guide for agents evaluating Phronesis as a tool |
+| `docs/guides/FOR_AGENTS.md` | Discovery guide for agents evaluating Phronesis as a tool |
 | `crates/phronesis-mcp/CLAUDE.md` | CLI reference, hook details, pack descriptions |
 | `crates/phronesis-mcp/docs/PATTERNS-WORKFLOW.md` | Working with patterns-guide rules |
 | `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md` | Rust coding standards (source for `extract_rules`) |
@@ -726,7 +735,7 @@ GitHub Pages: https://awaterma.github.io/phronesis/
 
 Current version: see `[workspace.package]` version in `Cargo.toml`
 
-Releases are automated by **release-plz** (see `docs/RELEASING.md`):
+Releases are automated by **release-plz** (see `docs/contributing/RELEASING.md`):
 conventional commits on `main` drive a Release PR; merging it publishes
 all three crates via crates.io trusted publishing and tags `vX.Y.Z`.
 Still manual: hand-written CHANGELOG.md entry, `phr-mcp catalogue`
@@ -877,5 +886,5 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 
 ---
 
-*Last updated: 2026-09-27*
-*Based on phronesis v0.35.0*
+*Last updated: 2026-11-20*
+*Based on phronesis v0.41.3*

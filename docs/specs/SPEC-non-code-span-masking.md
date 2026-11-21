@@ -1,4 +1,15 @@
+---
+title: "SPEC: non-code span masking for content predicates"
+status: partial
+---
+
 # SPEC: non-code span masking for content predicates
+
+> **Lifecycle status: partially implemented** — reconciled against code on 2026-11-20. Shipped part: Rust test-block masking for content extraction in [diff_extract.rs](../../crates/phronesis-mcp/src/diff_extract.rs) (`rust_test_block_keep_mask_for`). Gaps: the general non-code span masking (prose and string spans for content predicates) this spec designs was not found.
+>
+> Historical note: the body's “Status: proposed” (2026-08-07) stands for the unshipped parts.
+
+
 
 **Status:** proposed
 **Date:** 2026-08-07

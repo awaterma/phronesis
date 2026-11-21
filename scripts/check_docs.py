@@ -43,6 +43,7 @@ import json
 import posixpath
 import re
 import sys
+import subprocess
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -406,7 +407,16 @@ def heading_slugs(md_text: str) -> set[str]:
 
 def repo_md_files(docs: Path) -> list[Path]:
     files = []
-    for p in sorted(docs.rglob("*.md")):
+    # In a checkout, inspect only authored documents admitted to the index.
+    # Untracked private drafts must not be opened by routine docs checks.
+    inventory = subprocess.run(["git", "-C", str(docs.parent), "ls-files", "-z", "--", "docs"],
+                               capture_output=True, check=False)
+    candidates = (docs.parent / path.decode("utf-8") for path in inventory.stdout.split(b"\0") if path)
+    if inventory.returncode != 0:
+        candidates = docs.rglob("*.md")  # Standalone synthetic checker fixtures.
+    for p in sorted(candidates):
+        if p.suffix != ".md" or not p.is_file():
+            continue
         parts = p.relative_to(docs).parts
         if parts and (parts[0] in EXCLUDED_FROM_SITE or parts[0].startswith(".")):
             continue

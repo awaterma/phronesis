@@ -1,0 +1,503 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-20",
+  "source_commit": "6b13d596824ff141e285b5d3a293289a22f9d951",
+  "owner": "PR2 content-and-maintenance-workflow (content-skill lane)",
+  "description": "Records documentation paths moved into the canonical docs/ purpose hierarchy. Forwarding stubs are retained where shipped Rust strings/tests assert the original path. Consumers: website toolchain uses moves[] for redirects and GitHub file forwarding; contributors must extend this map in the same change that moves a document.",
+  "moves": [
+    {
+      "from": "docs/OWNERSHIP-EVIDENCE.md",
+      "to": "docs/architecture/OWNERSHIP-EVIDENCE.md",
+      "category": "architecture",
+      "note": "reclassified into docs/architecture; forwarding page preserves published GitHub file links"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-06-01-crates-io-publish-design.md",
+      "to": "docs/archive/designs/2026-06-01-crates-io-publish-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-06-01-rhai-script-evaluator-design.md",
+      "to": "docs/archive/designs/2026-06-01-rhai-script-evaluator-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-06-04-block-pattern-predicates-design.md",
+      "to": "docs/archive/designs/2026-06-04-block-pattern-predicates-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-06-06-rust-patterns-coverage-roadmap-requirements.md",
+      "to": "docs/archive/designs/2026-06-06-rust-patterns-coverage-roadmap-requirements.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-06-13-consumer-feature-extraction-design.md",
+      "to": "docs/archive/designs/2026-06-13-consumer-feature-extraction-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-06-13-domain-neutral-persistent-facts-design.md",
+      "to": "docs/archive/designs/2026-06-13-domain-neutral-persistent-facts-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-06-13-embedding-host-feature-gate-design.md",
+      "to": "docs/archive/designs/2026-06-13-embedding-host-feature-gate-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-06-28-mcp-crate-decomposition-design.md",
+      "to": "docs/archive/designs/2026-06-28-mcp-crate-decomposition-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-07-04-doc-web-unified-versioning-design.md",
+      "to": "docs/archive/designs/2026-07-04-doc-web-unified-versioning-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-07-06-payload-contract-corpus-design.md",
+      "to": "docs/archive/designs/2026-07-06-payload-contract-corpus-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-07-10-neutral-toolchain-outcomes-design.md",
+      "to": "docs/archive/designs/2026-07-10-neutral-toolchain-outcomes-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-07-12-evidence-integrity-hardening.md",
+      "to": "docs/archive/designs/2026-07-12-evidence-integrity-hardening.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-07-31-token-aware-durable-context-design.md",
+      "to": "docs/archive/designs/2026-07-31-token-aware-durable-context-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-07-31-typescript-code-graph-design.md",
+      "to": "docs/archive/designs/2026-07-31-typescript-code-graph-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-08-03-java-code-graph-design.md",
+      "to": "docs/archive/designs/2026-08-03-java-code-graph-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-08-11-cue-language-pack-design.md",
+      "to": "docs/archive/designs/2026-08-11-cue-language-pack-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-08-11-helm3-language-pack-design.md",
+      "to": "docs/archive/designs/2026-08-11-helm3-language-pack-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-08-11-json-language-pack-design.md",
+      "to": "docs/archive/designs/2026-08-11-json-language-pack-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-08-11-lua-language-pack-design.md",
+      "to": "docs/archive/designs/2026-08-11-lua-language-pack-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-08-11-yaml-language-pack-design.md",
+      "to": "docs/archive/designs/2026-08-11-yaml-language-pack-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-08-22-predicate-test-coverage-and-quality-warnings-plan.md",
+      "to": "docs/archive/designs/2026-08-22-predicate-test-coverage-and-quality-warnings-plan.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/specs/2026-10-17-go-and-language-packs-design.md",
+      "to": "docs/archive/designs/2026-10-17-go-and-language-packs-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-06-01-crates-io-publish.md",
+      "to": "docs/archive/plans/2026-06-01-crates-io-publish.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-06-04-block-pattern-predicates.md",
+      "to": "docs/archive/plans/2026-06-04-block-pattern-predicates.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-07-03-mcp-crate-decomposition.md",
+      "to": "docs/archive/plans/2026-07-03-mcp-crate-decomposition.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-07-03-migrate-extracted-rules.md",
+      "to": "docs/archive/plans/2026-07-03-migrate-extracted-rules.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-07-04-doc-web-unified-versioning.md",
+      "to": "docs/archive/plans/2026-07-04-doc-web-unified-versioning.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-07-06-payload-contract-corpus.md",
+      "to": "docs/archive/plans/2026-07-06-payload-contract-corpus.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-07-10-neutral-toolchain-outcomes.md",
+      "to": "docs/archive/plans/2026-07-10-neutral-toolchain-outcomes.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-07-31-token-aware-durable-context-opus-handoff.md",
+      "to": "docs/archive/plans/2026-07-31-token-aware-durable-context-opus-handoff.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-07-31-typescript-code-graph.md",
+      "to": "docs/archive/plans/2026-07-31-typescript-code-graph.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-08-05-drift-consolidation.md",
+      "to": "docs/archive/plans/2026-08-05-drift-consolidation.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-05-java-code-graph.md",
+      "to": "docs/archive/plans/2026-09-05-java-code-graph.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-05-java-completion-audit.md",
+      "to": "docs/archive/plans/2026-09-05-java-completion-audit.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-18-lifecycle-events-1-foundation.md",
+      "to": "docs/archive/plans/2026-09-18-lifecycle-events-1-foundation.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-18-lifecycle-events-2-claude-adapter.md",
+      "to": "docs/archive/plans/2026-09-18-lifecycle-events-2-claude-adapter.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-18-lifecycle-events-3-codex-adapter.md",
+      "to": "docs/archive/plans/2026-09-18-lifecycle-events-3-codex-adapter.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-18-lifecycle-events-4-gemini.md",
+      "to": "docs/archive/plans/2026-09-18-lifecycle-events-4-gemini.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-18-lifecycle-events-5-reporting.md",
+      "to": "docs/archive/plans/2026-09-18-lifecycle-events-5-reporting.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-18-lifecycle-events-6-work-items.md",
+      "to": "docs/archive/plans/2026-09-18-lifecycle-events-6-work-items.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-28-phronesis-evidence-gaps.md",
+      "to": "docs/archive/plans/2026-09-28-phronesis-evidence-gaps.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-09-29-phronesis-evidence-gaps-retrospective.md",
+      "to": "docs/archive/plans/2026-09-29-phronesis-evidence-gaps-retrospective.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-10-07-graph-diagnostics-and-test-assertion-rules.md",
+      "to": "docs/archive/plans/2026-10-07-graph-diagnostics-and-test-assertion-rules.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/2026-10-17-go-and-language-packs.md",
+      "to": "docs/archive/plans/2026-10-17-go-and-language-packs.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/PLAN-audit-script-conditions.md",
+      "to": "docs/archive/plans/PLAN-audit-script-conditions.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/PLAN-coverage-evidence.md",
+      "to": "docs/archive/plans/PLAN-coverage-evidence.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/PLAN-journey-facts.md",
+      "to": "docs/archive/plans/PLAN-journey-facts.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/PLAN-rule-schema-v2.md",
+      "to": "docs/archive/plans/PLAN-rule-schema-v2.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/PLAN-wiki-drift.md",
+      "to": "docs/archive/plans/PLAN-wiki-drift.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/reviews/2026-09-28-phronesis-evidence-gaps/consolidated.md",
+      "to": "docs/archive/plans/reviews/2026-09-28-phronesis-evidence-gaps/consolidated.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/reviews/2026-09-28-phronesis-evidence-gaps/review-codex-gpt-6-luna.md",
+      "to": "docs/archive/plans/reviews/2026-09-28-phronesis-evidence-gaps/review-codex-gpt-6-luna.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/reviews/2026-09-28-phronesis-evidence-gaps/review-f-codex-gpt-6-luna.md",
+      "to": "docs/archive/plans/reviews/2026-09-28-phronesis-evidence-gaps/review-f-codex-gpt-6-luna.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/reviews/2026-09-28-phronesis-evidence-gaps/review-f-glm-5.3.md",
+      "to": "docs/archive/plans/reviews/2026-09-28-phronesis-evidence-gaps/review-f-glm-5.3.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/superpowers/plans/reviews/2026-09-28-phronesis-evidence-gaps/review-glm-5.3.md",
+      "to": "docs/archive/plans/reviews/2026-09-28-phronesis-evidence-gaps/review-glm-5.3.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "findings.md",
+      "to": "docs/archive/reports/2026-09-24-dogfood-validation-findings.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/REPORT-java-code-graph-corpus.md",
+      "to": "docs/archive/reports/REPORT-java-code-graph-corpus.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/REPORT-java-qwen-review.md",
+      "to": "docs/archive/reports/REPORT-java-qwen-review.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/VALIDATE-durable-capsules-layered-rules.md",
+      "to": "docs/archive/reports/VALIDATE-durable-capsules-layered-rules.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/VALIDATE-ownership-evidence.md",
+      "to": "docs/archive/reports/VALIDATE-ownership-evidence.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": ".superpowers/sdd/hardening/agent-c-report.md",
+      "to": "docs/archive/reports/agent-c-report.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": ".scratch/swarm_report/coverage-evidence-swarm-report.html",
+      "to": "docs/archive/reports/coverage-evidence-swarm-report.html",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": ".scratch/swarm_report/coverage-verification-report.html",
+      "to": "docs/archive/reports/coverage-verification-report.html",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/reports/go-language-packs-validation.md",
+      "to": "docs/archive/reports/go-language-packs-validation.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/reports/rete-beta-and-audit-validation.md",
+      "to": "docs/archive/reports/rete-beta-and-audit-validation.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": ".superpowers/sdd/task-10-report.md",
+      "to": "docs/archive/reports/task-10-report.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/research/ownership-measurements.md",
+      "to": "docs/archive/research/ownership-measurements.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/reviews/PR-128-risk-testing.md",
+      "to": "docs/archive/reviews/PR-128-risk-testing.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/reviews/PR-128-second-review.md",
+      "to": "docs/archive/reviews/PR-128-second-review.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/specs/REVIEW-c-spec-design.md",
+      "to": "docs/archive/reviews/REVIEW-c-spec-design.md",
+      "category": "archive",
+      "note": "archived historical record, preserved intact with historical notice"
+    },
+    {
+      "from": "docs/RELEASING.md",
+      "to": "docs/contributing/RELEASING.md",
+      "category": "contributing",
+      "note": "reclassified into docs/contributing; forwarding page preserves published GitHub file links"
+    },
+    {
+      "from": "docs/COMMUNITY-SIGNALS.md",
+      "to": "docs/guides/COMMUNITY-SIGNALS.md",
+      "category": "guides",
+      "note": "reclassified into docs/guides; forwarding page preserves published GitHub file links"
+    },
+    {
+      "from": "docs/GO-COVERAGE.md",
+      "to": "docs/guides/GO-COVERAGE.md",
+      "category": "guides",
+      "note": "reclassified into docs/guides; forwarding page preserves published GitHub file links"
+    },
+    {
+      "from": "docs/loop-programming-guide.md",
+      "to": "docs/guides/loop-programming-guide.md",
+      "category": "guides",
+      "note": "reclassified into docs/guides; forwarding page preserves published GitHub file links"
+    },
+    {
+      "from": "docs/LANGUAGE-PACKS.md",
+      "to": "docs/reference/LANGUAGE-PACKS.md",
+      "category": "reference",
+      "note": "reclassified into docs/reference; forwarding page preserves published GitHub file links"
+    },
+    {
+      "from": "docs/FOR_AGENTS.md",
+      "to": "docs/guides/FOR_AGENTS.md",
+      "category": "guides",
+      "note": "reclassified into docs/guides; forwarding stub retained at docs/FOR_AGENTS.md (shipped SERVER_INSTRUCTIONS string and a test assert the original path)"
+    },
+    {
+      "from": "docs/participatory-governance.md",
+      "to": "docs/architecture/participatory-governance.md",
+      "category": "architecture",
+      "note": "reclassified into docs/architecture; forwarding stub retained (durable.md template constants and their tests reference the original path)"
+    },
+    {
+      "from": "docs/payload-corpus-promotion.md",
+      "to": "docs/guides/payload-corpus-promotion.md",
+      "category": "guides",
+      "note": "reclassified into docs/guides; forwarding stub retained (payload_contract.rs failure guidance references the original path)"
+    }
+  ],
+  "retained_in_place": [
+    {
+      "path": "CHANGELOG.md",
+      "category": "root-historical",
+      "reason": "historical release record; stays at repository root"
+    },
+    {
+      "path": "NOTICES.md",
+      "category": "root",
+      "reason": "legal notices; stays at repository root"
+    },
+    {
+      "path": "AGENTS.md",
+      "category": "root-agent-guidance",
+      "reason": "standing agent directives; stays at repository root"
+    }
+  ],
+  "adr_note": "ADR files under .phronesis/wiki/decisions/ move to docs/decisions/ in the configuration/ADR compatibility PR (adr-config lane), not here; do not double-map them.",
+  "website_pages_not_moved": [
+    "docs/index.html",
+    "docs/explainer.html",
+    "docs/catalogue.html",
+    "docs/changelog.html",
+    "docs/guide.html"
+  ],
+  "planned_followups": []
+}

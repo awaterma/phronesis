@@ -1,4 +1,13 @@
+---
+title: "SPEC: drift-consolidation — one drift tool, four sources"
+status: shipped
+---
+
 # SPEC: drift-consolidation — one drift tool, four sources
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20. Implementation: consolidated registry [drift/registry.rs](../../crates/phronesis-mcp/src/drift/registry.rs), rendering [drift/render.rs](../../crates/phronesis-mcp/src/drift/render.rs), and the four sources [claude_md_drift.rs](../../crates/phronesis-mcp/src/claude_md_drift.rs), [memory_drift.rs](../../crates/phronesis-mcp/src/memory_drift.rs), [wiki_drift.rs](../../crates/phronesis-mcp/src/wiki_drift.rs), plus code-source drift in [drift/](../../crates/phronesis-mcp/src/drift/mod.rs); exposed by the `get_drift` tool in [server.rs](../../crates/phronesis-mcp/src/server.rs) and `phr-mcp drift`. First release containing the consolidated registry: `v0.25.1` (tag-derived; the individual detectors predate it).
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman (design pass by glm-5.2 and codex)

@@ -7,7 +7,7 @@ MCP server wrapping the phronesis RETE rules engine for rules-bounded LLM intera
 `phr-mcp init --packs go` selects the bundled Go starter rule and toolchains.
 `phr-mcp pack validate <dir>`, `pack install <dir>`, `pack remove <id>`, and `pack list --json`
 operate on bounded declared assets; MCP `list_language_packs` exposes the same
-live inventory. See `../../docs/LANGUAGE-PACKS.md` and the external
+live inventory. See `../../docs/reference/LANGUAGE-PACKS.md` and the external
 `../../examples/language-packs/python-starter/` example. Pack facts and graph
 edges are source-level evidence, not a compiler or observed coverage result.
 
@@ -42,7 +42,7 @@ cargo run -- journey --corrections  # the prompts that followed an interrupt, ol
 cargo run -- kalpa start <name>     # Name the theme this run of sessions belongs to (also: kalpa end, kalpa show [name])
 cargo run -- unit start [<id>] [--spec <path>|--bug <id>]  # Name the work item being built (also: unit end, unit show [<id>])
 cargo run -- drift            # Multi-source drift across CLAUDE.md, memory, wiki decisions, and code
-cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
+cargo run -- decision new <slug>  # Scaffold a new ADR page at docs/decisions/<today>-<slug>.md (legacy .phronesis/wiki/decisions/ when canonical is absent)
 cargo run -- graph rebuild        # Rescan every Rust file into .phronesis/graph.jsonl (resync after git checkout/rebase)
 cargo run -- graph query [relation] [args...]  # Query the graph by relation and positional arguments (`*` is a wildcard in any position; omitting the relation lists the vocabulary); --json for JSON output, --limit caps rows (0 = no limit)
 cargo run -- graph query tested_by fire_all_consequences  # Example: tests covering a function, by bare name (a literal arg also matches a trailing `::` segment of a qualified ID)
@@ -237,7 +237,7 @@ JSON on stderr.
 
 `phr-mcp wiki-drift` is a frozen compatibility command retaining its existing
 single-source output and `--suggest` behavior. It walks
-`.phronesis/wiki/decisions/`, parses ADR-style frontmatter on each page, and
+`docs/decisions/` (canonical, plus the legacy `.phronesis/wiki/decisions/`), parses ADR-style frontmatter on each page, and
 classifies decisions into `covered` / `likely-covered` / `uncovered` /
 `superseded` against the current rule pack. Explicit `enforces: [rule-id]`
 frontmatter beats the Jaccard fallback — authors who list which rules enforce
@@ -521,7 +521,7 @@ you actually want.
 - `.mcp.json` — MCP server registration
 - `.phronesis/rules.json` — starter rule pack (left alone on re-run unless --force)
 - `.phronesis/durable.md` — default re-injected directives, including drift-discipline nudges that point the model at `get_drift`. Left alone on re-run; edit in place to customize.
-- `.phronesis/wiki/decisions/README.md` — wiki scaffold; the directory is un-ignored from the broad `.phronesis/` gitignore. Left alone on re-run.
+- `docs/decisions/README.md` — canonical ADR scaffold. Left alone on re-run; legacy `.phronesis/wiki/decisions/` projects keep working through compatibility discovery.
 - `.gemini/settings.json` — MCP server registration; `BeforeTool`/`AfterTool`
   hooks, whose matcher is now **anchored**
   (`^(replace|write_file|run_shell_command|invoke_agent)$`) because Gemini
@@ -845,7 +845,7 @@ behavior and reads only `.phronesis/rules.json`.
     {
       "name": "team",
       "path": ".phronesis/team-rules.json",
-      "decision": ".phronesis/wiki/decisions/ADR-team-policy.md",
+      "decision": "docs/decisions/ADR-team-policy.md",
       "optional": true
     },
     {
@@ -1034,7 +1034,7 @@ cargo test
 
 ## Versioning
 
-Semver, automated by **release-plz** (see `docs/RELEASING.md`). Version
+Semver, automated by **release-plz** (see `docs/contributing/RELEASING.md`). Version
 bumps, git tags, and crates.io publishing are no longer done by hand:
 release-plz watches conventional commits on `main`, opens/updates a
 Release PR (the human approval gate), and merging that PR publishes all

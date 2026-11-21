@@ -1,4 +1,15 @@
+---
+title: "SPEC: 0.14.0 — dogfooding-driven polish"
+status: shipped
+---
+
 # SPEC: 0.14.0 — dogfooding-driven polish
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20: the migration surface (`migrate-rules`, `handle_migrate_rules` in [main.rs](../../crates/phronesis-mcp/src/main.rs)) and the durable-template surface ([writers_scaffold.rs](../../crates/phronesis-mcp/src/init/writers_scaffold.rs)) this spec consolidated all exist in the tree. The earlier “first released in 0.14.0 per CHANGELOG topic match” claim was not code-verified and is left uncited; `migrate-rules` is first contained in tag `v0.17.0` (tag-derived).
+>
+> Historical note: the body's “Status: draft” (2026-06-21) is the original draft-stage record.
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

@@ -1,5 +1,5 @@
 //! Declarative toolchain definitions — the data that replaces hand-written
-//! adapters (design: docs/superpowers/specs/2026-07-10-neutral-toolchain-outcomes-design.md).
+//! adapters (design: docs/archive/designs/2026-07-10-neutral-toolchain-outcomes-design.md).
 //!
 //! A `ToolchainDef` says how to *recognize* a build/test command (`matches`)
 //! and, optionally, how to refine the exit-code signal: `compile_fail`

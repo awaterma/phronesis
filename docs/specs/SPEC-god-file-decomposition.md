@@ -1,4 +1,13 @@
+---
+title: "SPEC: God-File Decomposition"
+status: partial
+---
+
 # SPEC: God-File Decomposition
+
+> **Lifecycle status: partially implemented** — verified against the tree on 2026-11-20: `init.rs` is decomposed into [src/init/](../../crates/phronesis-mcp/src/init/mod.rs) and `audit.rs` into [src/audit/](../../crates/phronesis-mcp/src/audit/engine.rs); the `network.rs` plan is deferred (superseded-design note below; exemptions listed in [AGENTS.md](../../AGENTS.md)). No first-release claim is made here: the decomposition landed across releases and this spec tracks scope, not a date.
+
+
 
 **Status:** partially superseded — see note below
 **Authors:** Andrew Waterman, Claude
@@ -10,7 +19,7 @@
 > **Status note (2026-07-04):** The `server.rs` (§A) and `audit.rs` (§C)
 > guidance in this spec has been **superseded** by the MCP-crate decomposition
 > work completed in `fix/mcp-crate-decomposition`; see
-> `docs/superpowers/specs/2026-06-28-mcp-crate-decomposition-design.md`.
+> `docs/archive/designs/2026-06-28-mcp-crate-decomposition-design.md`.
 > Both files have been decomposed below the `audit-file-loc-high` threshold
 > and their `//! phronesis-allow` markers removed. The `network.rs` (§B)
 > guidance **remains live** and is deferred to the embedded-consumer-gated

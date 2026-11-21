@@ -1,4 +1,15 @@
+---
+title: "SPEC: python-pytest pack — phase one implementation"
+status: proposed
+---
+
 # SPEC: python-pytest pack — phase one implementation
+
+> **Lifecycle status: needs evidence (proposed)** — no `python-pytest` pack exists: shipped pack rule sources are [rules_python.rs](../../crates/phronesis-mcp/src/init/rules_python.rs) and the other [init/](../../crates/phronesis-mcp/src/init/mod.rs) pack modules, and no pytest rule pack is registered among them; [coverage/pytest.rs](../../crates/phronesis-mcp/src/coverage/pytest.rs) is the coverage collector for pytest (a different subsystem, shipped with coverage evidence).
+>
+> Historical note: the body's “Status: draft, target release 0.22.0” was never implemented as written; keep it as history.
+
+
 
 **Status:** draft (revised after Codex review, 2026-07-18)
 **Authors:** Claude, Andrew Waterman; reviewed by Codex

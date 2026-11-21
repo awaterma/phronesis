@@ -1,6 +1,6 @@
 //! Query-only record templates: render a manifest `RecordTemplate` against
 //! one `QueryMatch`'s captures, with no script
-//! (`docs/superpowers/specs/2026-10-17-go-and-language-packs-design.md`
+//! (`docs/archive/designs/2026-10-17-go-and-language-packs-design.md`
 //! §"Manifest and assets" — the `QuerySpec.emit` paragraph).
 //!
 //! A template is a JSON object matching the record schema. A whole-string

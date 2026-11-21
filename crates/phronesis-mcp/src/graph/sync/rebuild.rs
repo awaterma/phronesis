@@ -187,12 +187,15 @@ fn forces_rebuild(root: &Path, file_path: &str, content: &str) -> std::io::Resul
     // A manifest names units and bin targets that other files' edges resolve
     // against; no single file's re-extraction can apply that change.
     let cargo_manifest = file_path == "Cargo.toml" || file_path.ends_with("/Cargo.toml");
+    let canonical_decisions = crate::wiki::CANONICAL_DECISIONS_REL;
     Ok(pack_input
         || file_path.ends_with(".cue")
         || cargo_manifest
         || path_module_owner
         || file_path == ".phronesis/graph.toml"
         || file_path == ".phronesis/rules.json"
+        || (file_path.starts_with(canonical_decisions)
+            && file_path.len() > canonical_decisions.len())
         || file_path.starts_with(".phronesis/wiki/decisions/")
         || data_contract_input)
 }
