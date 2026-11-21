@@ -86,7 +86,7 @@ fn provider_can_classify_a_multi_file_change_set() {
 #[test]
 fn repository_change_set_provider_marks_missing_test_path() {
     let provider = RhaiFactProvider::new();
-    let script = include_str!("../../../.phronesis/predicates/change_set.rhai");
+    let script = include_str!("../../../config/phronesis/predicates/change_set.rhai");
     let source_only = FactProviderEvent {
         phase: "pre".to_string(),
         tool_name: "apply_patch".to_string(),

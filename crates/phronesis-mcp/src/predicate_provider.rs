@@ -534,7 +534,7 @@ mod reserved_tests {
 
     #[test]
     fn this_repos_change_set_provider_still_emits_its_facts() {
-        let script = include_str!("../../../.phronesis/predicates/change_set.rhai");
+        let script = include_str!("../../../config/phronesis/predicates/change_set.rhai");
         let facts = test_script(
             script,
             &ProviderEvent {
