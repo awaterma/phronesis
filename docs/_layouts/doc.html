@@ -10,7 +10,9 @@ layout: default
     {% if section_data %}
     <div class="web-kicker">{{ section_data.label }}</div>
     {% endif %}
+    {% unless content contains '<h1' %}
     <h1 class="doc-title">{{ page.title }}</h1>
+    {% endunless %}
     {% if page.status %}
     <span class="status status-{{ page.status }}">{{ page.status }}</span>
     {% endif %}

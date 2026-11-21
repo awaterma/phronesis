@@ -16,7 +16,7 @@
           <li><a href="{{ site.baseurl }}{{ s.index }}">Overview</a></li>
           {% endif %}
           {% for p in current_pages %}
-            {% unless p.url == page.url %}
+            {% unless p.url == s.index %}
             <li><a href="{{ p.url | relative_url }}"{% if p.url == page.url %} aria-current="page"{% endif %}>{{ p.title }}</a></li>
             {% endunless %}
           {% endfor %}
