@@ -276,17 +276,18 @@ enum Command {
         #[arg(long)]
         suggest: bool,
     },
-    /// Detect drift between ADR-style decision documents in
-    /// `.phronesis/wiki/decisions/` and the current rule pack.
-    /// Heuristic — explicit `enforces:` frontmatter lookups beat
-    /// Jaccard fallback. Read-only; always exits 0 on success.
+    /// Detect drift between ADR-style decision documents (canonical
+    /// `docs/decisions/`, legacy `.phronesis/wiki/decisions/`) and the
+    /// current rule pack. Heuristic — explicit `enforces:` frontmatter
+    /// lookups beat Jaccard fallback. Read-only; always exits 0 on success.
     #[command(name = "wiki-drift")]
     WikiDrift {
         /// Project root (defaults to current directory).
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Override the decisions directory. Defaults to
-        /// `<project_root>/.phronesis/wiki/decisions/`.
+        /// Override the decisions directory. Defaults to scanning the
+        /// canonical `docs/decisions/` plus the legacy
+        /// `.phronesis/wiki/decisions/` location when present.
         #[arg(long)]
         wiki_dir: Option<PathBuf>,
         /// Emit JSON instead of a table.
@@ -339,6 +340,18 @@ enum Command {
         /// Project root (defaults to current directory).
         #[arg(long, default_value = ".")]
         path: PathBuf,
+    },
+    /// Provision local `.phronesis/` state from the tracked presets in
+    /// `config/phronesis/`. Missing files are written; customized local
+    /// files are reported as conflicts and preserved; re-runs are no-ops.
+    /// Also ensures the anchored `/.phronesis/` ignore policy.
+    Provision {
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Print what would be done without writing anything.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// One-command setup for a project. Writes hook config, MCP server
     /// registration, a starter rules file, and updates .gitignore.
@@ -1331,8 +1344,9 @@ enum ContextCmd {
 
 #[derive(clap::Subcommand, Debug)]
 enum DecisionCmd {
-    /// Scaffold a new decision page at
-    /// `.phronesis/wiki/decisions/<today>-<slug>.md`.
+    /// Scaffold a new decision page. Created under `docs/decisions/` when
+    /// that directory exists, otherwise at the legacy
+    /// `.phronesis/wiki/decisions/<today>-<slug>.md` location.
     New {
         /// Kebab-case slug for the decision. Must match `[a-z0-9-]+`.
         slug: String,
@@ -1445,6 +1459,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Pack { cmd } => handle_pack(cmd),
         Command::State { path, json } => handle_state(path, json),
         Command::Clean { cache, path } => handle_clean(cache, path),
+        Command::Provision { path, dry_run } => handle_provision(path, dry_run),
         Command::Init {
             path,
             packs,
@@ -2326,9 +2341,8 @@ fn handle_wiki_drift(
     json: bool,
     suggest: bool,
 ) -> anyhow::Result<()> {
-    use phronesis_mcp::wiki;
     use phronesis_mcp::wiki_drift::{
-        DriftError, render_json, render_table, run_with_dir, suggest_rule,
+        DriftError, render_json, render_table, run, run_with_dir, suggest_rule,
     };
     let root = if path.is_absolute() {
         path
@@ -2337,8 +2351,13 @@ fn handle_wiki_drift(
             .map(|p| p.join(&path))
             .unwrap_or(path)
     };
-    let dir = wiki_dir.unwrap_or_else(|| wiki::default_wiki_dir(&root).join("decisions"));
-    match run_with_dir(&root, &dir) {
+    // An explicit --wiki-dir scans exactly that directory; the default
+    // resolves across the canonical and legacy locations.
+    let result = match wiki_dir {
+        Some(dir) => run_with_dir(&root, &dir),
+        None => run(&root),
+    };
+    match result {
         Ok(report) => {
             if json {
                 println!("{}", render_json(&report));
@@ -2356,9 +2375,36 @@ fn handle_wiki_drift(
             }
             Ok(())
         }
-        Err(DriftError::Wiki(phronesis_mcp::wiki::WikiError::DirMissing(p))) => {
+        Err(DriftError::Decisions(phronesis_mcp::wiki::DecisionsError::DirMissing(p))) => {
             eprintln!("error: wiki decisions directory not found at {}", p);
             eprintln!("hint: run `phr-mcp init` to create it, or pass `--wiki-dir <path>`.");
+            std::process::exit(1);
+        }
+        Err(DriftError::Decisions(phronesis_mcp::wiki::DecisionsError::NoDecisionsDir(
+            canonical,
+            legacy,
+        ))) => {
+            eprintln!(
+                "error: no decisions directory found (checked {} and {})",
+                canonical, legacy
+            );
+            eprintln!(
+                "hint: create docs/decisions/ for canonical decisions; `phr-mcp init` \
+                 scaffolds the legacy location when canonical is absent. Use `--wiki-dir <path>` to override."
+            );
+            std::process::exit(1);
+        }
+        Err(DriftError::Decisions(phronesis_mcp::wiki::DecisionsError::DuplicateId {
+            id,
+            location,
+            first,
+            second,
+        })) => {
+            eprintln!(
+                "error: duplicate decision id `{}` in {}: {} and {} both claim it; \
+                 merge or remove one copy",
+                id, location, first, second
+            );
             std::process::exit(1);
         }
         Err(e) => {
@@ -2682,6 +2728,21 @@ fn handle_clean(cache: bool, path: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn handle_provision(path: PathBuf, dry_run: bool) -> anyhow::Result<()> {
+    use phronesis_mcp::local_state;
+
+    let root = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|p| p.join(&path))
+            .unwrap_or(path)
+    };
+    let report = local_state::setup(&root, dry_run)?;
+    print!("{}", local_state::render_report(&report));
+    Ok(())
+}
+
 async fn handle_context(cmd: ContextCmd) -> anyhow::Result<()> {
     use phronesis_mcp::context;
 
@@ -2888,7 +2949,15 @@ fn handle_decision(cmd: DecisionCmd) -> anyhow::Result<()> {
             }
 
             let date = today_iso();
-            let dir = wiki::default_wiki_dir(&root).join("decisions");
+            // Canonical projects scaffold into docs/decisions/; projects
+            // without the canonical directory keep the legacy location so
+            // existing workflows are untouched.
+            let canonical = wiki::canonical_decisions_dir(&root);
+            let dir = if canonical.is_dir() {
+                canonical
+            } else {
+                wiki::legacy_decisions_dir(&root)
+            };
             let filename = format!("{}-{}.md", date, slug);
             let dest = dir.join(&filename);
             if dest.exists() {

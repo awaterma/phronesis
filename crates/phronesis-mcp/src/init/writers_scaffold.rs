@@ -314,25 +314,63 @@ The rest of `.phronesis/` (rules.json, log.jsonl, etc.) stays \
 gitignored.
 ";
 
+const CANONICAL_DECISIONS_README: &str = "\
+# `docs/decisions/`
+
+ADR-style decision pages. Each file is one decision (e.g. \
+`2026-05-29-error-handling-policy.md`). The first block is YAML \
+frontmatter (`id`, `date`, `status`, optional `enforces`, \
+`superseded_by`, `tags`). The body uses Context / Decision / \
+Enforcement / Consequences sections.
+
+Run `phr-mcp drift --source wiki` to see which decisions lack rule coverage.
+Create new pages with `phr-mcp decision new <slug>`.
+
+This is the canonical decisions directory and is tracked in git like any \
+other documentation. For compatibility, tools also read the legacy \
+`.phronesis/wiki/decisions/` location when it exists; local `.phronesis/` \
+state stays gitignored.
+";
+
 pub(super) fn write_wiki_scaffold(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
 ) -> Result<(), InitError> {
-    let dir = root.join(".phronesis").join("wiki").join("decisions");
+    // Canonical decisions live in `docs/decisions/` (tracked like any other
+    // documentation) when that directory already exists. Projects
+    // without that directory keep the legacy `.phronesis/wiki/decisions/`
+    // scaffold, and `decision new` keeps creating pages there.
+    let (dir, readme_const, present_note, would_note, created_note) =
+        if crate::wiki::canonical_decisions_dir(root).is_dir() {
+            let dir = crate::wiki::canonical_decisions_dir(root);
+            (
+                dir,
+                CANONICAL_DECISIONS_README,
+                "= docs/decisions/README.md already exists — leaving unchanged".to_string(),
+                "+ would create docs/decisions/ + README.md".to_string(),
+                "+ created docs/decisions/ + README.md".to_string(),
+            )
+        } else {
+            let dir = root.join(".phronesis").join("wiki").join("decisions");
+            (
+                dir,
+                WIKI_DECISIONS_README,
+                "= .phronesis/wiki/decisions/README.md already exists — leaving unchanged"
+                    .to_string(),
+                "+ would create .phronesis/wiki/decisions/ + README.md".to_string(),
+                "+ created .phronesis/wiki/decisions/ + README.md".to_string(),
+            )
+        };
     let readme = dir.join("README.md");
 
     if readme.exists() {
-        report.steps.push(
-            "= .phronesis/wiki/decisions/README.md already exists — leaving unchanged".to_string(),
-        );
+        report.steps.push(present_note);
         return Ok(());
     }
 
     if opts.dry_run {
-        report
-            .steps
-            .push("+ would create .phronesis/wiki/decisions/ + README.md".to_string());
+        report.steps.push(would_note);
         return Ok(());
     }
 
@@ -340,13 +378,11 @@ pub(super) fn write_wiki_scaffold(
         path: dir.display().to_string(),
         source: e,
     })?;
-    std::fs::write(&readme, WIKI_DECISIONS_README).map_err(|e| InitError::Io {
+    std::fs::write(&readme, readme_const).map_err(|e| InitError::Io {
         path: readme.display().to_string(),
         source: e,
     })?;
-    report
-        .steps
-        .push("+ created .phronesis/wiki/decisions/ + README.md".to_string());
+    report.steps.push(created_note);
     Ok(())
 }
 
@@ -717,6 +753,35 @@ pub(super) fn build_structural_graph(root: &Path, opts: &InitOpts, report: &mut 
 }
 
 pub(super) fn update_gitignore(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    let path = root.join(".gitignore");
+    let anchored_present = std::fs::read_to_string(&path)
+        .map(|content| {
+            content
+                .lines()
+                .any(|l| l.trim() == crate::local_state::ROOT_IGNORE_ENTRY)
+        })
+        .unwrap_or(false);
+    if anchored_present {
+        // Explicit `/.phronesis/` opt-in: the whole-directory policy is in
+        // force and init must not touch or undo it.
+        report.steps.push(
+            "= .gitignore already carries the anchored `/.phronesis/` whole-directory ignore \
+             — left untouched"
+                .to_string(),
+        );
+        return Ok(());
+    }
+    update_gitignore_legacy(root, opts, report)
+}
+
+/// Pre-0.42 behavior, preserved verbatim for projects that have not adopted
+/// the local-state policy (no anchored `/.phronesis/` opt-in): a broad ignore plus un-ignore
+/// carveouts keep the wiki tree and preset-shaped state tracked.
+fn update_gitignore_legacy(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,

@@ -1525,3 +1525,96 @@ fn lua_pack_writes_busted_toolchain_def() {
         "an existing entry is left untouched"
     );
 }
+
+#[test]
+fn init_canonical_directory_does_not_migrate_state_policy() {
+    // The ADR location and local-state policy are independent choices.
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = dir.path().join("docs/decisions");
+    std::fs::create_dir_all(&canonical).unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let readme = std::fs::read_to_string(canonical.join("README.md")).unwrap();
+    assert!(readme.contains("docs/decisions"));
+    assert!(!dir.path().join(".phronesis/wiki").exists());
+
+    let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    let lines: Vec<&str> = gi.lines().map(str::trim).collect();
+    assert!(!lines.contains(&"/.phronesis/"));
+    assert!(lines.contains(&"!.phronesis/predicates/**"));
+    assert!(lines.contains(&".phronesis/*"));
+}
+
+#[test]
+fn init_anchored_optin_leaves_gitignore_untouched() {
+    // Explicit `/.phronesis/` opt-in: the whole-directory policy is in
+    // force; init neither removes it nor reintroduces carveouts, and
+    // scaffolding preserves the legacy decisions directory when canonical is absent.
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    std::fs::write(&gi_path, "/target\n/.phronesis/\n").unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let gi = std::fs::read_to_string(&gi_path).unwrap();
+    assert_eq!(
+        gi, "/target\n/.phronesis/\n",
+        "opt-in policy must return untouched"
+    );
+    assert!(!dir.path().join("docs/decisions").exists());
+    assert!(
+        dir.path()
+            .join(".phronesis/wiki/decisions/README.md")
+            .exists()
+    );
+}
+
+#[test]
+fn init_canonical_adoption_preserves_existing_canonical_readme() {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = dir.path().join("docs/decisions");
+    std::fs::create_dir_all(&canonical).unwrap();
+    let original = "# my custom README\n\nproject-specific notes\n";
+    std::fs::write(canonical.join("README.md"), original).unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success());
+    assert_eq!(
+        std::fs::read_to_string(canonical.join("README.md")).unwrap(),
+        original,
+        "init must not overwrite an existing README"
+    );
+}
+
+#[test]
+fn init_fresh_project_keeps_legacy_scaffold_and_carveouts() {
+    // A project that adopted nothing keeps the pre-0.42 behavior exactly:
+    // the wiki scaffold under .phronesis/ and the carveout ignore policy.
+    // This is the compatibility guarantee for other projects.
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success());
+
+    let dec = dir.path().join(".phronesis/wiki/decisions");
+    assert!(dec.is_dir(), "legacy decisions dir should be created");
+    assert!(dec.join("README.md").is_file());
+    assert!(!dir.path().join("docs/decisions").exists());
+
+    let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    let lines: Vec<&str> = gi.lines().map(str::trim).collect();
+    assert!(lines.contains(&".phronesis/*"));
+    assert!(lines.contains(&"!.phronesis/wiki/"));
+    assert!(lines.contains(&"!.phronesis/wiki/**"));
+    assert!(!lines.contains(&"/.phronesis/"));
+}

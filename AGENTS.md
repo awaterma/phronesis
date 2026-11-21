@@ -183,7 +183,7 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `drift` | Consolidated guidance/rule drift across `claude_md`, `memory`, `wiki`, and `code` sources |
 | `claude-md-drift`, `memory-drift`, `wiki-drift` | Frozen compatibility commands for the original single-source reports |
 | `context list\|acknowledge\|retract\|inspect\|predicates\|stats` | Inspect and measure token-aware durable context: list, acknowledge, and retract rule-emitted capsules, render the configured payload for one event, list the nudge predicate allowlist, and summarize payload cost and latency |
-| `decision new <slug>` | Scaffold an ADR page under `.phronesis/wiki/decisions/` |
+| `decision new <slug>` | Scaffold an ADR page under `docs/decisions/` (legacy `.phronesis/wiki/decisions/` when canonical is absent) |
 | `migrate-rules <path>` | Convert v1 rules.json to v2 in place |
 | `migrate-durable [path]` | Bring `.phronesis/durable.md` up to the current shipped template — rewrites only a file matching a known prior template verbatim, leaves customized files alone, backs up to `durable.md.bak` |
 | `migrate-extracted-rules <path>` | Rewrite pre-0.14.0 `extract_rules` output in a rules.json — strip bracketed metadata prefixes, demote `block` to `warn`, demote rules the Rust pack already enforces structurally to `log`; idempotent, backs up to `rules.json.bak` |
@@ -631,6 +631,13 @@ set_section_context { "file": "docs/RUST-PATTERNS-GUIDE.md", "section": "API Des
 ### CI/CD Integration
 
 ```bash
+# Provision agent state from tracked presets (config/phronesis/)
+phr-mcp provision
+
+# Provision starter rules from shipped packs (clean clones have no
+# local rules.json — /.phronesis/ is wholly ignored)
+phr-mcp init --rules-only --packs llm,rust,rhai,typescript,confidence
+
 # Fail build on blocking violations
 phr-mcp audit --fail-on block
 

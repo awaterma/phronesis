@@ -1,6 +1,9 @@
-//! Wiki page primitives — ADR-style decision pages under
-//! `.phronesis/wiki/decisions/`. Shared by `wiki_drift` and by any
-//! future wiki-consuming module.
+//! Wiki page primitives — ADR-style decision pages. Shared by `wiki_drift`
+//! and by any future wiki-consuming module. Discovery is centralized here:
+//! canonical decisions live in `docs/decisions/`, the legacy
+//! `.phronesis/wiki/decisions/` location is still read for compatibility,
+//! canonical ids take precedence, and differing duplicate copies surface as
+//! diagnostics.
 
 use std::path::{Path, PathBuf};
 
@@ -186,6 +189,294 @@ pub fn walk_decisions(wiki_dir: &Path) -> Result<Vec<Decision>, WikiError> {
     // Newest first. String comparison works because dates are ISO YYYY-MM-DD.
     decisions.sort_by(|a, b| b.frontmatter.date.cmp(&a.frontmatter.date));
     Ok(decisions)
+}
+
+/// Walk a decisions directory tolerantly: parse errors are returned
+/// alongside the decisions instead of aborting the walk, so lenient
+/// consumers can report them without discarding the whole corpus.
+fn walk_decisions_lenient(wiki_dir: &Path) -> (Vec<Decision>, Vec<UnreadableDecision>) {
+    let mut decisions = Vec::new();
+    let mut unreadable = Vec::new();
+    let entries = match std::fs::read_dir(wiki_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return (
+                decisions,
+                vec![UnreadableDecision {
+                    path: wiki_dir.to_path_buf(),
+                    message: error.to_string(),
+                }],
+            );
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                unreadable.push(UnreadableDecision {
+                    path: wiki_dir.to_path_buf(),
+                    message: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let path = entry.path();
+        if !path.is_file()
+            || path.extension().and_then(|e| e.to_str()) != Some("md")
+            || path.file_name().and_then(|n| n.to_str()) == Some("README.md")
+        {
+            continue;
+        }
+        match parse_decision_file(&path) {
+            Ok(decision) => decisions.push(decision),
+            Err(error) => unreadable.push(UnreadableDecision {
+                path,
+                message: error.to_string(),
+            }),
+        }
+    }
+    decisions.sort_by(|a, b| b.frontmatter.date.cmp(&a.frontmatter.date));
+    (decisions, unreadable)
+}
+
+/// Canonical decisions directory, relative to the project root:
+/// `docs/decisions/`. Tracked like any other documentation.
+pub const CANONICAL_DECISIONS_REL: &str = "docs/decisions";
+
+/// Legacy decisions directory, relative to the project root:
+/// `.phronesis/wiki/decisions/`. Pre-0.42 projects keep their decisions
+/// here; `init` still creates it when the canonical directory is absent.
+pub const LEGACY_DECISIONS_REL: &str = ".phronesis/wiki/decisions";
+
+/// `<project_root>/docs/decisions/`.
+pub fn canonical_decisions_dir(project_root: &Path) -> PathBuf {
+    project_root.join(CANONICAL_DECISIONS_REL)
+}
+
+/// `<project_root>/.phronesis/wiki/decisions/`.
+pub fn legacy_decisions_dir(project_root: &Path) -> PathBuf {
+    project_root.join(LEGACY_DECISIONS_REL)
+}
+
+/// One decision id claimable by two locations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionConflict {
+    pub id: String,
+    pub canonical: PathBuf,
+    pub legacy: PathBuf,
+}
+
+/// Two files in one location claiming the same decision id. Recorded by the
+/// lenient resolution (graph extraction) and rejected by the strict one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateId {
+    pub id: String,
+    pub location: PathBuf,
+    pub first: PathBuf,
+    pub second: PathBuf,
+}
+
+/// A decision file whose frontmatter could not be parsed. Lenient consumers
+/// (graph extraction) surface it as a visible diagnostic instead of
+/// discarding the whole corpus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableDecision {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+/// Decisions resolved across locations, plus the diagnostics produced while
+/// resolving them.
+#[derive(Debug, Clone, Default)]
+pub struct DecisionSet {
+    /// Resolved decisions (canonical precedence by id), newest first.
+    pub decisions: Vec<Decision>,
+    /// Same id in both locations with differing file content. The canonical
+    /// copy governs; the diagnostic tells the operator to reconcile.
+    pub conflicts: Vec<DecisionConflict>,
+    /// Same id twice within one location (lenient mode only). All copies of
+    /// such an id are dropped — no copy is trusted to govern.
+    pub duplicates: Vec<DuplicateId>,
+    /// Files that failed to parse (lenient mode only). The rest of the
+    /// corpus still resolves; the errors stay visible.
+    pub unreadable: Vec<UnreadableDecision>,
+}
+
+/// How strict resolution treats two files in one location claiming the same
+/// decision id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuplicatePolicy {
+    /// Return [`DecisionsError::DuplicateId`] (drift and CLI consumers:
+    /// a duplicate id makes the corpus untrustworthy).
+    Reject,
+    /// Drop all copies of the id, record them in
+    /// [`DecisionSet::duplicates`], and keep going (graph extraction must
+    /// stay total; the duplicate surfaces as a diagnostic edge).
+    DropWithDiagnostic,
+}
+
+#[derive(Debug, Error)]
+pub enum DecisionsError {
+    #[error("no decisions directory found; checked {0} and {1}")]
+    NoDecisionsDir(String, String),
+    #[error("decisions directory not found at {0}")]
+    DirMissing(String),
+    #[error("duplicate decision id `{id}` in {location}: {first} and {second} both claim it")]
+    DuplicateId {
+        id: String,
+        location: String,
+        first: String,
+        second: String,
+    },
+    #[error(transparent)]
+    Wiki(#[from] WikiError),
+}
+
+/// Resolve the decision corpus for `project_root`.
+///
+/// With `override_dir`, exactly that directory is scanned (callers that let
+/// the operator point elsewhere keep full control; no merging). Otherwise
+/// the canonical `docs/decisions/` and legacy `.phronesis/wiki/decisions/`
+/// directories are scanned in that order when they exist. Canonical
+/// documents take precedence on duplicate ids; a legacy copy with differing
+/// content is recorded as a conflict diagnostic and an identical copy is
+/// silently superseded.
+pub fn resolve_decisions(
+    project_root: &Path,
+    override_dir: Option<&Path>,
+    policy: DuplicatePolicy,
+) -> Result<DecisionSet, DecisionsError> {
+    let dirs: Vec<PathBuf> = match override_dir {
+        Some(dir) => vec![dir.to_path_buf()],
+        None => {
+            let canonical = canonical_decisions_dir(project_root);
+            let legacy = legacy_decisions_dir(project_root);
+            let mut dirs = Vec::new();
+            if canonical.is_dir() {
+                dirs.push(canonical.clone());
+            }
+            if legacy.is_dir() {
+                dirs.push(legacy.clone());
+            }
+            if dirs.is_empty() {
+                return Err(DecisionsError::NoDecisionsDir(
+                    canonical.display().to_string(),
+                    legacy.display().to_string(),
+                ));
+            }
+            dirs
+        }
+    };
+
+    let mut scanned: Vec<(PathBuf, Vec<Decision>)> = Vec::with_capacity(dirs.len());
+    let mut duplicates = Vec::new();
+    let mut set_errors: Vec<UnreadableDecision> = Vec::new();
+    for dir in &dirs {
+        if !dir.is_dir() {
+            return Err(DecisionsError::DirMissing(dir.display().to_string()));
+        }
+        let (decisions, unreadable) = match policy {
+            DuplicatePolicy::Reject => (walk_decisions(dir)?, Vec::new()),
+            DuplicatePolicy::DropWithDiagnostic => walk_decisions_lenient(dir),
+        };
+        unreadable.into_iter().for_each(|u| set_errors.push(u));
+        let mut seen: std::collections::BTreeMap<&str, PathBuf> = std::collections::BTreeMap::new();
+        let mut duplicated_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for decision in &decisions {
+            match seen.get(decision.frontmatter.id.as_str()) {
+                Some(first) => match policy {
+                    DuplicatePolicy::Reject => {
+                        return Err(DecisionsError::DuplicateId {
+                            id: decision.frontmatter.id.clone(),
+                            location: dir.display().to_string(),
+                            first: first.display().to_string(),
+                            second: decision.path.display().to_string(),
+                        });
+                    }
+                    DuplicatePolicy::DropWithDiagnostic => {
+                        duplicated_ids.insert(decision.frontmatter.id.clone());
+                        duplicates.push(DuplicateId {
+                            id: decision.frontmatter.id.clone(),
+                            location: dir.clone(),
+                            first: first.clone(),
+                            second: decision.path.clone(),
+                        });
+                    }
+                },
+                None => {
+                    seen.insert(decision.frontmatter.id.as_str(), decision.path.clone());
+                }
+            }
+        }
+        // Lenient mode drops every copy of an ambiguous id: no copy is
+        // trusted to govern.
+        let kept = if duplicated_ids.is_empty() {
+            decisions
+        } else {
+            decisions
+                .into_iter()
+                .filter(|d| !duplicated_ids.contains(d.frontmatter.id.as_str()))
+                .collect()
+        };
+        scanned.push((dir.clone(), kept));
+    }
+
+    let mut by_id: std::collections::BTreeMap<String, Decision> = std::collections::BTreeMap::new();
+    let ambiguous: std::collections::HashSet<&str> = duplicates
+        .iter()
+        .map(|duplicate| duplicate.id.as_str())
+        .collect();
+    let mut conflicts = Vec::new();
+    // `dirs` lists canonical before legacy, so the first claim on an id is
+    // the canonical copy (or, under an override, the only copy — no merging
+    // can occur with a single directory).
+    for (_, decisions) in scanned {
+        for decision in decisions {
+            let id = decision.frontmatter.id.clone();
+            if ambiguous.contains(id.as_str()) {
+                continue;
+            }
+            match by_id.get(&id) {
+                None => {
+                    by_id.insert(id, decision);
+                }
+                Some(existing) => {
+                    if file_contents_differ(&existing.path, &decision.path) {
+                        conflicts.push(DecisionConflict {
+                            id,
+                            canonical: existing.path.clone(),
+                            legacy: decision.path.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut decisions: Vec<Decision> = by_id.into_values().collect();
+    decisions.sort_by(|a, b| b.frontmatter.date.cmp(&a.frontmatter.date));
+    Ok(DecisionSet {
+        decisions,
+        conflicts,
+        duplicates,
+        unreadable: set_errors,
+    })
+}
+
+fn file_contents_differ(a: &Path, b: &Path) -> bool {
+    match (std::fs::read_to_string(a), std::fs::read_to_string(b)) {
+        (Ok(a), Ok(b)) => a != b,
+        _ => true,
+    }
+}
+
+/// Lenient entry for consumers that must stay total (graph extraction feeds
+/// freshness and hook-time provenance and cannot fail closed on a decision
+/// layout problem): a missing corpus yields an empty set and within-location
+/// duplicates are dropped with a recorded diagnostic.
+pub fn resolve_decisions_lenient(project_root: &Path) -> DecisionSet {
+    resolve_decisions(project_root, None, DuplicatePolicy::DropWithDiagnostic).unwrap_or_default()
 }
 
 #[cfg(test)]

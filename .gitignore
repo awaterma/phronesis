@@ -27,24 +27,10 @@ docs/specs/PLAN-v0.11-hardening.md
 .vscode/
 .mcp.json
 
-# Local rules cache produced when running phr-mcp here
-.phronesis/*
-!.phronesis/properties.json
-.phronesis/log.jsonl
-.phronesis/log.jsonl.1
-.phronesis/rules.json.bak
-!.phronesis/wiki/
-!.phronesis/wiki/**
-!.phronesis/journey.json
-!.phronesis/confidence.json
-!.phronesis/bugs.json
-!.phronesis/toolchains.json
-!.phronesis/predicates/
-!.phronesis/predicates/**
-!.phronesis/context.json
-!.phronesis/kernel.md
-!.phronesis/nudges/
-!.phronesis/nudges/**
+# Local agent state — the whole root directory is local-only. Reviewed
+# policy travels in config/phronesis/ (provisioned with `phr-mcp provision`)
+# and canonical ADRs live in docs/decisions/.
+/.phronesis/
 
 # Point-in-time project evaluations. Generated from local audit/graph/stats
 # state, so they go stale the moment the tree moves — keep them local rather
@@ -52,8 +38,5 @@ docs/specs/PLAN-v0.11-hardening.md
 docs/phronesis-evaluation-*.html
 
 # Coverage evidence derived state (SPEC-coverage-evidence)
-.phronesis/coverage.jsonl
-.phronesis/coverage.index
-.phronesis/coverage.lock
 *.profraw
 crates/phronesis-mcp/tests/fixtures/coverage-sample/target/

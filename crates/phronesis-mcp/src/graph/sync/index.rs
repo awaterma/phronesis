@@ -150,23 +150,32 @@ pub(super) fn decision_input_files(root: &Path) -> Vec<String> {
     if root.join(".phronesis/rules.json").is_file() {
         out.push(".phronesis/rules.json".to_string());
     }
-    let dir = root.join(".phronesis/wiki/decisions");
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("md")
-                || path.file_name().and_then(|name| name.to_str()) == Some("README.md")
-            {
-                continue;
-            }
-            if let Ok(rel) = path.strip_prefix(root)
-                && let Some(rel) = rel.to_str()
-            {
-                out.push(rel.replace('\\', "/"));
+    // Both locations feed freshness: canonical docs/decisions/ and the
+    // legacy .phronesis/wiki/decisions/ tree still present on upgraded
+    // projects. Any edit in either flips staleness so the rebuild
+    // re-resolves precedence and re-emits conflict diagnostics.
+    for dir in [
+        crate::wiki::canonical_decisions_dir(root),
+        crate::wiki::legacy_decisions_dir(root),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("md")
+                    || path.file_name().and_then(|name| name.to_str()) == Some("README.md")
+                {
+                    continue;
+                }
+                if let Ok(rel) = path.strip_prefix(root)
+                    && let Some(rel) = rel.to_str()
+                {
+                    out.push(rel.replace('\\', "/"));
+                }
             }
         }
     }
     out.sort();
+    out.dedup();
     out
 }
 
@@ -269,9 +278,11 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
 
 /// Inputs whose discovery does not depend on an installed pack manifest.
 fn is_native_input(rel: &str) -> bool {
+    let canonical_decisions = crate::wiki::CANONICAL_DECISIONS_REL;
     is_tracked(rel)
         || is_cargo_manifest(rel)
         || crate::graph::java::project::is_manifest(rel)
+        || (rel.starts_with(canonical_decisions) && rel.len() > canonical_decisions.len())
         || rel.starts_with(".phronesis/wiki/decisions/")
 }
 
@@ -381,4 +392,44 @@ fn context_inputs_for(
         }
     }
     out.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decision_input_files_cover_both_locations() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let canonical = crate::wiki::canonical_decisions_dir(dir.path());
+        let legacy = crate::wiki::legacy_decisions_dir(dir.path());
+        std::fs::create_dir_all(&canonical).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(canonical.join("2026-01-01-canonical.md"), "x").unwrap();
+        std::fs::write(canonical.join("README.md"), "index").unwrap();
+        std::fs::write(legacy.join("2026-02-02-legacy.md"), "y").unwrap();
+
+        let mut files = decision_input_files(dir.path());
+        assert!(files.contains(&"docs/decisions/2026-01-01-canonical.md".to_string()));
+        assert!(files.contains(&".phronesis/wiki/decisions/2026-02-02-legacy.md".to_string()));
+        assert!(
+            !files.contains(&"docs/decisions/README.md".to_string()),
+            "README is the index, not a decision page"
+        );
+        // Sorted, stable output.
+        let mut expected = files.clone();
+        expected.sort();
+        files.sort();
+        assert_eq!(files, expected);
+    }
+
+    #[test]
+    fn canonical_decision_files_are_native_inputs() {
+        assert!(is_native_input("docs/decisions/2026-01-01-choice.md"));
+        assert!(is_native_input(
+            ".phronesis/wiki/decisions/2026-01-01-choice.md"
+        ));
+        // The directory itself is not a file input.
+        assert!(!is_native_input("docs/decisions"));
+    }
 }

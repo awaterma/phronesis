@@ -21,6 +21,7 @@ pub mod journey;
 pub mod journey_cli;
 pub mod language_packs;
 pub mod lifecycle;
+pub mod local_state;
 pub mod memory_drift;
 pub mod migrate_extracted;
 pub mod net;
