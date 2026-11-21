@@ -200,14 +200,14 @@ fn run_memory(inputs: &SourceInputs<'_>) -> DriftReport {
 }
 
 fn run_wiki(inputs: &SourceInputs<'_>) -> DriftReport {
-    let dir = match inputs.wiki_dir {
-        Some(p) => p.to_path_buf(),
-        None => crate::wiki::default_wiki_dir(inputs.project_root).join("decisions"),
+    // With an explicit `wiki_dir` override exactly that directory is
+    // scanned; otherwise discovery merges the canonical docs/decisions/
+    // corpus with the legacy .phronesis/wiki/decisions/ location.
+    let result = match inputs.wiki_dir {
+        Some(p) => crate::wiki_drift::run_with_dir(inputs.project_root, p),
+        None => crate::wiki_drift::run(inputs.project_root),
     };
-    if !dir.is_dir() {
-        return DriftReport::missing(Source::Wiki, MissingReason::NoDir);
-    }
-    match crate::wiki_drift::run_with_dir(inputs.project_root, &dir) {
+    match result {
         Ok(report) => {
             let items = apply_suggest(crate::wiki_drift::into_items(&report), inputs.suggest);
             DriftReport {
@@ -219,6 +219,12 @@ fn run_wiki(inputs: &SourceInputs<'_>) -> DriftReport {
                 items,
             }
         }
+        Err(crate::wiki_drift::DriftError::Decisions(
+            crate::wiki::DecisionsError::NoDecisionsDir(..),
+        ))
+        | Err(crate::wiki_drift::DriftError::Decisions(crate::wiki::DecisionsError::DirMissing(
+            _,
+        ))) => DriftReport::missing(Source::Wiki, MissingReason::NoDir),
         Err(e) => DriftReport::errored(Source::Wiki, e.to_string()),
     }
 }

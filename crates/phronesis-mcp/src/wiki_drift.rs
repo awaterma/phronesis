@@ -1,6 +1,6 @@
-//! Detect drift between ADR-style decision documents in
-//! `.phronesis/wiki/decisions/` and the current rule pack. Heuristic
-//! by design (no LLM call); output is a triage list.
+//! Detect drift between ADR-style decision documents (canonical
+//! `docs/decisions/`, legacy `.phronesis/wiki/decisions/`) and the current
+//! rule pack. Heuristic by design (no LLM call); output is a triage list.
 
 use std::path::Path;
 
@@ -8,7 +8,7 @@ use phr::RuleId;
 use thiserror::Error;
 
 use crate::rules_file::{self, DiskRule};
-use crate::wiki::{self, Decision, DecisionStatus};
+use crate::wiki::{self, Decision, DecisionConflict, DecisionStatus};
 
 const COVERAGE_THRESHOLD: f32 = 0.15;
 
@@ -45,20 +45,25 @@ pub struct DriftReport {
     pub rules_path: String,
     pub items: Vec<DriftItem>,
     pub coverage_threshold: f32,
+    /// Same decision id found in both locations with differing content.
+    /// The canonical copy governs; the operator reconciles the copies.
+    pub conflicts: Vec<DecisionConflict>,
 }
 
 #[derive(Debug, Error)]
 pub enum DriftError {
     #[error(transparent)]
     Wiki(#[from] wiki::WikiError),
+    #[error(transparent)]
+    Decisions(#[from] wiki::DecisionsError),
     #[error("failed to read rules file: {0}")]
     RulesIo(String),
 }
 
-/// Default entry: walks `<project_root>/.phronesis/wiki/decisions/`.
+/// Default entry: resolves decisions across the canonical and legacy
+/// locations under `<project_root>`.
 pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
-    let dir = wiki::default_wiki_dir(project_root).join("decisions");
-    run_with_dir(project_root, &dir)
+    run_resolved(project_root, None)
 }
 
 #[cfg(test)]
@@ -76,10 +81,26 @@ mod run_entry_tests {
     }
 }
 
-/// Override entry: scan an arbitrary decisions directory. Useful for tests
-/// and for callers who put the wiki elsewhere.
+/// Override entry: scan exactly the given decisions directory. Useful for
+/// tests and for callers who put the wiki elsewhere; no merging with the
+/// canonical location happens under an explicit override.
 pub fn run_with_dir(project_root: &Path, decisions_dir: &Path) -> Result<DriftReport, DriftError> {
-    let decisions = wiki::walk_decisions(decisions_dir)?;
+    run_resolved(project_root, Some(decisions_dir))
+}
+
+fn run_resolved(
+    project_root: &Path,
+    override_dir: Option<&Path>,
+) -> Result<DriftReport, DriftError> {
+    let set = wiki::resolve_decisions(project_root, override_dir, wiki::DuplicatePolicy::Reject)?;
+    let decisions_dir = override_dir.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        let canonical = wiki::canonical_decisions_dir(project_root);
+        if canonical.is_dir() {
+            canonical
+        } else {
+            wiki::legacy_decisions_dir(project_root)
+        }
+    });
     let rules_path = rules_file::default_path(project_root);
     let rules = rules_file::read(&rules_path).map_err(|e| DriftError::RulesIo(e.to_string()))?;
     let rule_id_set: std::collections::HashSet<&str> = rules
@@ -90,7 +111,8 @@ pub fn run_with_dir(project_root: &Path, decisions_dir: &Path) -> Result<DriftRe
         .map(|r| rules_file::base_rule_id(&r.id))
         .collect();
 
-    let items = decisions
+    let items = set
+        .decisions
         .into_iter()
         .map(|d| score_decision(d, &rules.rules, &rule_id_set))
         .collect();
@@ -100,6 +122,7 @@ pub fn run_with_dir(project_root: &Path, decisions_dir: &Path) -> Result<DriftRe
         rules_path: rules_path.display().to_string(),
         items,
         coverage_threshold: COVERAGE_THRESHOLD,
+        conflicts: set.conflicts,
     })
 }
 
@@ -244,8 +267,22 @@ pub fn render_table(report: &DriftReport) -> String {
     out.push_str(&format!("Wiki:  {}\n", report.wiki_dir));
     out.push_str(&format!("Rules: {}\n\n", report.rules_path));
 
+    for conflict in &report.conflicts {
+        out.push_str(&format!(
+            "conflict: decision `{}` differs between {} and {} (canonical governs)\n",
+            conflict.id,
+            conflict.canonical.display(),
+            conflict.legacy.display(),
+        ));
+    }
+    if !report.conflicts.is_empty() {
+        out.push('\n');
+    }
+
     if report.items.is_empty() {
-        out.push_str("No decisions found.\n");
+        if report.conflicts.is_empty() {
+            out.push_str("No decisions found.\n");
+        }
         return out;
     }
 
@@ -300,10 +337,22 @@ pub fn render_json(report: &DriftReport) -> String {
     // a clean double (e.g. 0.15) rather than the f32→f64 representation
     // artifact (0.15000000596046448).
     let threshold = (report.coverage_threshold as f64 * 100.0).round() / 100.0;
+    let conflicts: Vec<serde_json::Value> = report
+        .conflicts
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.id,
+                "canonical": c.canonical.display().to_string(),
+                "legacy": c.legacy.display().to_string(),
+            })
+        })
+        .collect();
     serde_json::to_string_pretty(&serde_json::json!({
         "wiki_dir": report.wiki_dir,
         "rules_path": report.rules_path,
         "coverage_threshold": threshold,
+        "conflicts": conflicts,
         "items": items,
     }))
     .unwrap_or_else(|_| String::from("{}"))
@@ -800,6 +849,7 @@ mod tests {
             wiki_dir: ".phronesis/wiki/decisions".to_string(),
             rules_path: ".phronesis/rules.json".to_string(),
             coverage_threshold: 0.15,
+            conflicts: Vec::new(),
             items: vec![DriftItem {
                 decision: sample_decision_with_enforces(),
                 bucket: Bucket::Covered,
@@ -824,6 +874,7 @@ mod tests {
             wiki_dir: ".phronesis/wiki/decisions".to_string(),
             rules_path: ".phronesis/rules.json".to_string(),
             coverage_threshold: 0.15,
+            conflicts: Vec::new(),
             items: vec![DriftItem {
                 decision: sample_decision_without_enforces(),
                 bucket: Bucket::Uncovered,

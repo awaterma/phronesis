@@ -2,6 +2,7 @@
 
 Development, testing, release, and documentation-maintenance policies.
 
+- [Local developer state](local-setup.md) — provision reviewed presets, preserve customized files, and understand canonical/legacy ADR compatibility.
 - [Releasing](RELEASING.md) — release-plz flow, conventional commits, versioning, and the manual steps around each release.
 - [Documentation policy](documentation.md) — where documents live, lifecycle statuses, historical notices, and how to keep this hierarchy healthy.
 - Agent workflow and code standards: [`AGENTS.md`](../../AGENTS.md) (build/test/lint commands, rule packs, review checklist).
