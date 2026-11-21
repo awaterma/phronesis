@@ -1,0 +1,34 @@
+{% comment %}
+  Section sidebar: the current section's pages are listed in full; every
+  other known section appears as a link to its index when one exists.
+  Section definitions come from docs/_data/navigation.yml so content
+  pages stay declarative.
+{% endcomment %}
+<aside class="site-sidebar" aria-label="Section navigation">
+  {% for s in site.data.navigation.sections %}
+    {% if page.section == s.id %}
+      {% assign current_pages = site.pages | where: "section", s.id | sort: "nav_order", "last" %}
+      {% if current_pages.size > 0 %}
+      <div class="sidebar-group">
+        <div class="sidebar-heading">{{ s.label }}</div>
+        <ul class="sidebar-list">
+          {% if s.index %}
+          <li><a href="{{ site.baseurl }}{{ s.index }}">Overview</a></li>
+          {% endif %}
+          {% for p in current_pages %}
+            {% unless p.url == page.url %}
+            <li><a href="{{ p.url | relative_url }}"{% if p.url == page.url %} aria-current="page"{% endif %}>{{ p.title }}</a></li>
+            {% endunless %}
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    {% else %}
+      {% if s.index %}
+      <div class="sidebar-group">
+        <div class="sidebar-heading sidebar-heading-muted"><a href="{{ site.baseurl }}{{ s.index }}">{{ s.label }}</a></div>
+      </div>
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+</aside>

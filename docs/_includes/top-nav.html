@@ -1,0 +1,15 @@
+<nav class="web-nav" aria-label="Documentation">
+  <div class="web-nav-links">
+    <a href="{{ site.baseurl }}/index.html">Home</a>
+    <a href="{{ site.baseurl }}/explainer.html">Explainer</a>
+    <a href="{{ site.baseurl }}/catalogue.html">Catalogue</a>
+    <a href="{{ site.baseurl }}/guide.html">Guide</a>
+    <a href="{{ site.baseurl }}/changelog.html">Changelog</a>
+    <a href="{{ site.baseurl }}/docs/">Docs</a>
+    {% for s in site.data.navigation.sections %}
+      {% if s.index %}
+      <a href="{{ site.baseurl }}{{ s.index }}"{% if page.section == s.id %} aria-current="true"{% endif %}>{{ s.label }}</a>
+      {% endif %}
+    {% endfor %}
+  </div>
+</nav>

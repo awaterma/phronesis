@@ -1,0 +1,44 @@
+# Section navigation for the shared documentation layouts.
+#
+# `id` matches the `section` front-matter value and the directory name
+# under docs/. `label` renders in the top nav, sidebar, and breadcrumbs.
+# `index` is the section's index page URL once an index page exists
+# (created with `layout: section`); sections without an index simply do
+# not appear in the top nav, and their sidebar heading stays unlinked.
+# `description` renders on section index pages built with the `section`
+# layout and beside child links in the sidebar.
+#
+# `index` is REQUIRED for every section and must be the rendered URL of
+# that section's canonical `docs/<id>/README.md` (`/<id>/`). The shared
+# documentation checker (scripts/check_docs.py) verifies that each index
+# URL exists in the built site, that section index pages link every child
+# page, and that sidebar and breadcrumb navigation link back to them.
+sections:
+  - id: tutorials
+    label: Tutorials
+    description: First successful setup and end-to-end examples.
+    index: /tutorials/
+  - id: guides
+    label: Guides
+    description: Task-oriented instructions.
+    index: /guides/
+  - id: reference
+    label: Reference
+    description: CLI, MCP, configuration, predicates, and language support.
+    index: /reference/
+  - id: architecture
+    label: Architecture
+    description: Explanations of implemented behavior.
+    index: /architecture/
+  - id: decisions
+    label: Decisions
+    description: Architecture decision records with stable IDs and enforcement links.
+    index: /decisions/
+  - id: specs
+    label: Specs
+    description: Proposed or evolving designs with explicit lifecycle status.
+    index: /specs/
+  - id: contributing
+    label: Contributing
+    description: Development, testing, releases, and documentation maintenance.
+    index: /contributing/

@@ -1,0 +1,22 @@
+---
+layout: default
+---
+{% assign section_data = nil %}
+{% for s in site.data.navigation.sections %}
+  {% if s.id == page.section %}{% assign section_data = s %}{% endif %}
+{% endfor %}
+<article class="doc">
+  <header class="doc-header">
+    {% if section_data %}
+    <div class="web-kicker">{{ section_data.label }}</div>
+    {% endif %}
+    <h1 class="doc-title">{{ page.title }}</h1>
+    {% if page.status %}
+    <span class="status status-{{ page.status }}">{{ page.status }}</span>
+    {% endif %}
+    {% if page.description %}
+    <p class="doc-standfirst">{{ page.description }}</p>
+    {% endif %}
+  </header>
+  {{ content }}
+</article>

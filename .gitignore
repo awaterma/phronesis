@@ -57,3 +57,10 @@ docs/phronesis-evaluation-*.html
 .phronesis/coverage.lock
 *.profraw
 crates/phronesis-mcp/tests/fixtures/coverage-sample/target/
+
+# Website build output and caches
+docs/_site/
+docs/.jekyll-cache/
+
+# Python documentation-checker bytecode
+**/__pycache__/
