@@ -5,7 +5,7 @@ status: shipped
 
 # SPEC: 0.14.0 — dogfooding-driven polish
 
-> **Lifecycle status: shipped** — reconciled against code on 2026-11-20: the migration surface (`migrate-rules`, `handle_migrate_rules` in [main.rs](../../crates/phronesis-mcp/src/main.rs)) and the durable-template surface ([writers_scaffold.rs](../../crates/phronesis-mcp/src/init/writers_scaffold.rs)) this spec consolidated all exist in the tree. The earlier “first released in 0.14.0 per CHANGELOG topic match” claim was not code-verified and is left uncited; `migrate-rules` is first contained in tag `v0.17.0` (tag-derived).
+> **Lifecycle status: shipped** — the four constituent changes are present in the current tree: commit/merge detection in [lifecycle/outcome.rs](../../crates/phronesis-mcp/src/lifecycle/outcome.rs), pack opt-in markers in [init/types.rs](../../crates/phronesis-mcp/src/init/types.rs), extracted-rule defaults in [diff_extract.rs](../../crates/phronesis-mcp/src/diff_extract.rs), and filtered journey counts in [journey/derive.rs](../../crates/phronesis-mcp/src/journey/derive.rs). Their individual specs below identify implementation and test evidence. The target version in this historical design does not establish when all four changes were released.
 >
 > Historical note: the body's “Status: draft” (2026-06-21) is the original draft-stage record.
 
