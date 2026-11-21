@@ -122,7 +122,7 @@ fn scaffolded_defs_recognize_command_position_only() {
 }
 
 #[test]
-fn repository_toolchain_defs_match_the_confidence_scaffold() {
+fn example_toolchain_defs_match_the_confidence_scaffold() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
         .args(["init", "--packs", "confidence"])
@@ -138,7 +138,7 @@ fn repository_toolchain_defs_match_the_confidence_scaffold() {
     .expect("parse generated toolchains");
     let repository_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join(".phronesis/toolchains.json");
+        .join("examples/phronesis/toolchains.json");
     let repository: serde_json::Value = serde_json::from_slice(
         &std::fs::read(&repository_path).expect("read repository toolchains"),
     )
