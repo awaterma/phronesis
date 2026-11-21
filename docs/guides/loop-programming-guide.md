@@ -11,7 +11,7 @@ first turn to the thousandth. For the conceptual grounding, see the
 essay and the rule catalogue live there. It assumes you've read the
 [README](../README.md)
 and have `phr-mcp` installed. For the full CLI surface, see the
-[Command Reference](../crates/phronesis-mcp/CLAUDE.md).
+[Command Reference](../../crates/phronesis-mcp/CLAUDE.md).
 
 ---
 
@@ -79,7 +79,7 @@ gives you a working set immediately: the `rust` pack blocks `.unwrap()` /
 `panic!()` / `todo!()` in `src/`, `Result<_, String>` returns, and more; the
 `llm` pack blocks blame-shifting and **unverified completion claims**, and warns
 on bare `git commit -m` to nudge end-to-end verification. (See the
-[Command Reference](../crates/phronesis-mcp/CLAUDE.md) for the full pack
+[Command Reference](../../crates/phronesis-mcp/CLAUDE.md) for the full pack
 contents.)
 
 Layer 1 is extensible without recompiling Phronesis. Sandboxed Rhai providers
@@ -112,7 +112,7 @@ are recomputed from the durable journal every call, over the window your rules
 actually ask for. So they survive compaction, stay deterministic, and "decay"
 for free — a `journey_occurrence` count of 3 holds while the window covers
 three auth edits, and quietly drops to 2 once the window slides past one of
-them. (Full design: [SPEC-journey-facts](specs/SPEC-journey-facts.md).)
+them. (Full design: [SPEC-journey-facts](../specs/SPEC-journey-facts.md).)
 
 Because a `pre-check` runs *before* the current call is journaled, a journey
 rule can **block the current action based on the trajectory that led to it** —
@@ -138,7 +138,7 @@ you have an advisory operational signal backed by a separate guard against
 claiming unverified success. Confidence itself does not refuse the Git command.
 The default platform writes `.phronesis/confidence.json`; inspect the current
 band with `phr-mcp confidence`. (Full design:
-[SPEC-confidence-scoring](specs/SPEC-confidence-scoring.md).)
+[SPEC-confidence-scoring](../specs/SPEC-confidence-scoring.md).)
 
 ---
 
@@ -687,9 +687,9 @@ same boundary.
 ## Further reading
 
 - [README](../README.md) — project overview and the premise
-- [Command Reference](../crates/phronesis-mcp/CLAUDE.md) — full CLI + pack details
-- [SPEC-journey-facts](specs/SPEC-journey-facts.md) — the trajectory layer in depth
-- [SPEC-agent-lifecycle-events](specs/SPEC-agent-lifecycle-events.md) — sub-agents, interrupts, corrections, kalpas
-- [SPEC-confidence-scoring](specs/SPEC-confidence-scoring.md) — grounded closure gating
+- [Command Reference](../../crates/phronesis-mcp/CLAUDE.md) — full CLI + pack details
+- [SPEC-journey-facts](../specs/SPEC-journey-facts.md) — the trajectory layer in depth
+- [SPEC-agent-lifecycle-events](../specs/SPEC-agent-lifecycle-events.md) — sub-agents, interrupts, corrections, kalpas
+- [SPEC-confidence-scoring](../specs/SPEC-confidence-scoring.md) — grounded closure gating
 - [The Explainer](https://awaterma.github.io/phronesis/explainer.html) — the RETE engine and design intent
 - [The Catalogue](https://awaterma.github.io/phronesis/catalogue.html) — visual reference of starter rules
