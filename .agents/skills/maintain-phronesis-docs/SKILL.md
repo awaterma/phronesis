@@ -22,7 +22,11 @@ Normal automatic discovery stays enabled; explicit invocation works with
 1. **Scope.** Inspect the relevant changes (diff, release notes, new code) and
    list the canonical documents they affect. Inventory tracked documents with
    `git ls-files` only; never read, move, or publish untracked private drafts.
-2. **Route.** Assign content to one of the eight purpose directories
+2. **Route.** If the collaborator selects a private external ADR/spec repository,
+   use the policy's private-destination workflow: save only the requested
+   material there, keep routing local, omit public links/index entries, and
+   push only when requested for that repository. Otherwise assign content
+   to one of the eight purpose directories
    (`tutorials`, `guides`, `reference`, `architecture`, `decisions`, `specs`,
    `contributing`, `archive` — see `docs/README.md`). Update the existing
    authoritative page instead of creating a near-duplicate. Crate READMEs,

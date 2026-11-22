@@ -40,6 +40,14 @@ Every documentation move is recorded in [`docs/migration-map.json`](../migration
 
 Inventory tracked documents with `git ls-files` only. Untracked local drafts are never published, moved, indexed, or copied into Git by documentation work.
 
+When the collaborator explicitly selects a separate private spec repository,
+save the requested ADRs or specs there instead of adding them to this hierarchy.
+Keep the destination mapping local, and do not add its path, contents, or links
+to public indexes or migration maps. This authorizes only the selected material
+and destination, not an inventory of unrelated private drafts. See
+[private ADR repositories](../guides/private-decision-repository.md) for the
+Phronesis commands and the separation between local saving and requested pushes.
+
 ## Checks
 
 Structural requirements (index reachability, internal links, spec status headers, migration-map consistency) are enforced by the shared documentation check command run in CI; run the same command locally before handing off documentation changes and report what passed, what remains uncertain, and any deferred work.

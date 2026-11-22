@@ -2,6 +2,8 @@
 
 Task-oriented instructions: how to accomplish a specific job with Phronesis.
 
+- [Private ADR repositories](private-decision-repository.md) — create and inspect personal decisions in an external checkout with local-only routing.
+
 - [Phronesis for Loop-Based Agent Programming](loop-programming-guide.md) — govern the iterative propose/act/observe loop so it does not drift across long sessions.
 - [Go runtime coverage evidence](GO-COVERAGE.md) — import per-test Go coverage, attribute hits to changed functions, and use `coverage select`.
 - [Community signals](COMMUNITY-SIGNALS.md) — how the weekly community-signals snapshots work and what they do and do not measure.

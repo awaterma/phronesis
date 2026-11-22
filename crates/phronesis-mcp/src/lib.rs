@@ -8,6 +8,7 @@ pub mod clock_facts;
 pub mod codex_hook;
 pub mod context;
 pub mod coverage;
+pub mod decision_store;
 pub mod diff_extract;
 pub mod drift;
 pub mod durable_migrate;

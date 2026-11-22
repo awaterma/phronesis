@@ -42,7 +42,7 @@ cargo run -- journey --corrections  # the prompts that followed an interrupt, ol
 cargo run -- kalpa start <name>     # Name the theme this run of sessions belongs to (also: kalpa end, kalpa show [name])
 cargo run -- unit start [<id>] [--spec <path>|--bug <id>]  # Name the work item being built (also: unit end, unit show [<id>])
 cargo run -- drift            # Multi-source drift across CLAUDE.md, memory, wiki decisions, and code
-cargo run -- decision new <slug>  # Scaffold a new ADR page at docs/decisions/<today>-<slug>.md (legacy .phronesis/wiki/decisions/ when canonical is absent)
+cargo run -- decision new <slug>  # Scaffold in the configured private store, or canonical/legacy project location
 cargo run -- graph rebuild        # Rescan every Rust file into .phronesis/graph.jsonl (resync after git checkout/rebase)
 cargo run -- graph query [relation] [args...]  # Query the graph by relation and positional arguments (`*` is a wildcard in any position; omitting the relation lists the vocabulary); --json for JSON output, --limit caps rows (0 = no limit)
 cargo run -- graph query tested_by fire_all_consequences  # Example: tests covering a function, by bare name (a literal arg also matches a trailing `::` segment of a qualified ID)
@@ -243,7 +243,13 @@ classifies decisions into `covered` / `likely-covered` / `uncovered` /
 frontmatter beats the Jaccard fallback — authors who list which rules enforce
 a decision get a deterministic match. `--suggest` emits draft v2 rule JSON on
 stderr for uncovered decisions. Pair with `phr-mcp decision new <slug>` to
-scaffold new ADR pages from a template.
+scaffold new ADR pages from a template. The explicit CLI can use a private
+external store configured with `phr-mcp decision configure --directory <path>`;
+`phr-mcp decision list` discovers that store. The mapping stays in ignored
+`.phronesis/decision-store.json`, and no command commits or pushes. Automatic
+graph/hook provenance and consolidated/MCP drift keep project-only discovery.
+See [private ADR repositories](../../docs/guides/private-decision-repository.md)
+for overrides and privacy boundaries.
 
 All drift surfaces are heuristic (no LLM call) — output is a triage list, not
 ground truth.

@@ -285,9 +285,10 @@ enum Command {
         /// Project root (defaults to current directory).
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Override the decisions directory. Defaults to scanning the
-        /// canonical `docs/decisions/` plus the legacy
-        /// `.phronesis/wiki/decisions/` location when present.
+        /// Override the decisions directory (relative to the current directory).
+        /// Otherwise use the local decision store if configured, then the
+        /// canonical and legacy project locations. Only this explicit CLI
+        /// command consults the private store; automatic drift does not.
         #[arg(long)]
         wiki_dir: Option<PathBuf>,
         /// Emit JSON instead of a table.
@@ -1344,15 +1345,37 @@ enum ContextCmd {
 
 #[derive(clap::Subcommand, Debug)]
 enum DecisionCmd {
-    /// Scaffold a new decision page. Created under `docs/decisions/` when
-    /// that directory exists, otherwise at the legacy
-    /// `.phronesis/wiki/decisions/<today>-<slug>.md` location.
+    /// Configure a private external ADR directory in ignored local state.
+    /// Saves locally only; never commits, pushes, or changes Git remotes.
+    Configure {
+        /// Existing absolute directory outside the project, usually a
+        /// project-specific subdirectory in a private spec checkout.
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// List ADRs from the configured store or the project defaults.
+    List {
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Explicit directory override, relative to the project root.
+        #[arg(long)]
+        decisions_dir: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Scaffold a decision in the configured store, or in `docs/decisions/`
+    /// when present, otherwise the legacy `.phronesis/wiki/decisions/`.
     New {
         /// Kebab-case slug for the decision. Must match `[a-z0-9-]+`.
         slug: String,
         /// Project root (defaults to current directory).
         #[arg(long, default_value = ".")]
         path: PathBuf,
+        /// Explicit directory override, relative to the project root.
+        #[arg(long)]
+        decisions_dir: Option<PathBuf>,
     },
 }
 
@@ -2351,8 +2374,12 @@ fn handle_wiki_drift(
             .map(|p| p.join(&path))
             .unwrap_or(path)
     };
-    // An explicit --wiki-dir scans exactly that directory; the default
-    // resolves across the canonical and legacy locations.
+    // Private routing belongs to explicit CLI use, never automatic drift,
+    // graph extraction, or hook-time provenance.
+    let wiki_dir = match wiki_dir {
+        Some(directory) => Some(directory),
+        None => phronesis_mcp::decision_store::configured_directory(&root)?,
+    };
     let result = match wiki_dir {
         Some(dir) => run_with_dir(&root, &dir),
         None => run(&root),
@@ -2925,9 +2952,80 @@ async fn handle_context(cmd: ContextCmd) -> anyhow::Result<()> {
 }
 
 fn handle_decision(cmd: DecisionCmd) -> anyhow::Result<()> {
+    use phronesis_mcp::{decision_store, wiki};
     match cmd {
-        DecisionCmd::New { slug, path } => {
-            use phronesis_mcp::wiki;
+        DecisionCmd::Configure { directory, path } => {
+            let root = std::path::absolute(path)?;
+            let directory = decision_store::configure(&root, &directory)?;
+            println!(
+                "configured local decision directory: {}",
+                directory.display()
+            );
+            Ok(())
+        }
+        DecisionCmd::List {
+            path,
+            decisions_dir,
+            json,
+        } => {
+            let root = std::path::absolute(path)?;
+            let directory = decision_store::override_directory(&root, decisions_dir.as_deref())?;
+            let set = wiki::resolve_decisions(
+                &root,
+                directory.as_deref(),
+                wiki::DuplicatePolicy::Reject,
+            )?;
+            if json {
+                let decisions: Vec<_> = set
+                    .decisions
+                    .iter()
+                    .map(|decision| {
+                        serde_json::json!({
+                            "id": decision.frontmatter.id,
+                            "date": decision.frontmatter.date,
+                            "status": decision.frontmatter.status.as_str(),
+                            "path": decision.path,
+                        })
+                    })
+                    .collect();
+                let conflicts: Vec<_> = set
+                    .conflicts
+                    .iter()
+                    .map(|conflict| {
+                        serde_json::json!({
+                            "id": conflict.id,
+                            "canonical": conflict.canonical,
+                            "legacy": conflict.legacy,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "decisions": decisions,
+                        "conflicts": conflicts,
+                    }))?
+                );
+            } else {
+                for decision in set.decisions {
+                    println!(
+                        "{}\t{}\t{}",
+                        decision.frontmatter.id,
+                        decision.frontmatter.status.as_str(),
+                        decision.path.display()
+                    );
+                }
+                for conflict in set.conflicts {
+                    eprintln!("conflicting legacy copy of decision {}", conflict.id);
+                }
+            }
+            Ok(())
+        }
+        DecisionCmd::New {
+            slug,
+            path,
+            decisions_dir,
+        } => {
             let root = if path.is_absolute() {
                 path
             } else {
@@ -2949,15 +3047,7 @@ fn handle_decision(cmd: DecisionCmd) -> anyhow::Result<()> {
             }
 
             let date = today_iso();
-            // Canonical projects scaffold into docs/decisions/; projects
-            // without the canonical directory keep the legacy location so
-            // existing workflows are untouched.
-            let canonical = wiki::canonical_decisions_dir(&root);
-            let dir = if canonical.is_dir() {
-                canonical
-            } else {
-                wiki::legacy_decisions_dir(&root)
-            };
+            let dir = decision_store::creation_directory(&root, decisions_dir.as_deref())?;
             let filename = format!("{}-{}.md", date, slug);
             let dest = dir.join(&filename);
             if dest.exists() {
@@ -3000,7 +3090,13 @@ fn handle_decision(cmd: DecisionCmd) -> anyhow::Result<()> {
                 slug = slug,
                 date = date,
             );
-            std::fs::write(&dest, template)
+            // create_new also rejects dangling symlinks and concurrent creation.
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&dest)?
+                .write_all(template.as_bytes())
                 .map_err(|e| anyhow::anyhow!("write {}: {}", dest.display(), e))?;
             println!("created {}", dest.display());
             Ok(())
