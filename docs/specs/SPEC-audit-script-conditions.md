@@ -1,4 +1,15 @@
+---
+title: "SPEC: builtin file-scoped script guards in audit"
+status: shipped
+---
+
 # SPEC: builtin file-scoped script guards in audit
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20. The builtin `__script__` guard DSL is evaluated in audit: [audit/engine.rs](../../crates/phronesis-mcp/src/audit/engine.rs) (`script_guards_pass`, `validate_builtin_script`, applied per path fact); see also the builtin-script grammar in [script_evaluator.rs](../../crates/phronesis/src/script_evaluator.rs). First release containing the audit script-guard support: `v0.36.0` (tag-derived from introducing commit `70124d4`).
+>
+> Historical note: the body's “Status: accepted for implementation, target v0.31.x” records the original plan; the code landed in a later release than targeted.
+
+
 
 **Status:** accepted for implementation  
 **Date:** 2026-08-24  

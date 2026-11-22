@@ -1,4 +1,13 @@
+---
+title: "SPEC: wiki-drift — decisions → rules extractor"
+status: shipped
+---
+
 # SPEC: wiki-drift — decisions → rules extractor
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20. Implementation: the detector in [wiki_drift.rs](../../crates/phronesis-mcp/src/wiki_drift.rs) over decision pages built by [wiki.rs](../../crates/phronesis-mcp/src/wiki.rs), exposed via the drift commands in [main.rs](../../crates/phronesis-mcp/src/main.rs). First release containing the detector: `v0.9.1` (tag-derived; the earlier “0.37.2 per CHANGELOG” claim was not code-verified and is left uncited).
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

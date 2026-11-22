@@ -40,3 +40,13 @@ docs/phronesis-evaluation-*.html
 # Coverage evidence derived state (SPEC-coverage-evidence)
 *.profraw
 crates/phronesis-mcp/tests/fixtures/coverage-sample/target/
+
+# Local agent skill files: ignore by default so unrelated local skills are
+# never imported into Git; the shipped docs-maintenance skill is the explicit
+# allowlist exception.
+.agents/**
+!.agents/skills/
+!.agents/skills/maintain-phronesis-docs/
+!.agents/skills/maintain-phronesis-docs/SKILL.md
+!.agents/skills/maintain-phronesis-docs/templates/
+!.agents/skills/maintain-phronesis-docs/templates/spec-status-header.md

@@ -1,4 +1,13 @@
+---
+title: "SPEC: Extensible predicates"
+status: shipped
+---
+
 # SPEC: Extensible predicates
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20. Implementation: [predicate_provider.rs](../../crates/phronesis-mcp/src/predicate_provider.rs) (provider validation, reserved predicates, fact emission) with the sandboxed evaluator in [rhai/adapter.rs](../../crates/phronesis-rhai/src/adapter.rs); `eval` is disabled in provider scripts. First release containing the provider surface: `v0.22.0` (tag-derived; agrees with the earlier changelog-derived claim).
+
+
 
 **Status:** implemented
 **Target release:** 0.22.0

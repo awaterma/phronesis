@@ -45,9 +45,9 @@
 //! - `--home` defaults to `$HOME`; `--project-root` defaults to the current
 //!   directory, so in-project paths are preserved when run from the root.
 //!
-//! Design: `docs/superpowers/specs/2026-07-06-payload-contract-corpus-design.md`
+//! Design: `docs/archive/designs/2026-07-06-payload-contract-corpus-design.md`
 //! and Tasks 1–2 of
-//! `docs/superpowers/specs/2026-07-12-evidence-integrity-hardening.md`.
+//! `docs/archive/designs/2026-07-12-evidence-integrity-hardening.md`.
 
 use std::path::Path;
 

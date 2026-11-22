@@ -1,4 +1,15 @@
+---
+title: "SPEC: 0.14.0 — dogfooding-driven polish"
+status: shipped
+---
+
 # SPEC: 0.14.0 — dogfooding-driven polish
+
+> **Lifecycle status: shipped** — the four constituent changes are present in the current tree: commit/merge detection in [lifecycle/outcome.rs](../../crates/phronesis-mcp/src/lifecycle/outcome.rs), pack opt-in markers in [init/types.rs](../../crates/phronesis-mcp/src/init/types.rs), extracted-rule defaults in [diff_extract.rs](../../crates/phronesis-mcp/src/diff_extract.rs), and filtered journey counts in [journey/derive.rs](../../crates/phronesis-mcp/src/journey/derive.rs). Their individual specs below identify implementation and test evidence. The target version in this historical design does not establish when all four changes were released.
+>
+> Historical note: the body's “Status: draft” (2026-06-21) is the original draft-stage record.
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman
