@@ -11,7 +11,7 @@
 # Existing packages normally already match the registry on an ordinary push.
 # A new workspace package is an exception: it can require publication even
 # without a version bump. Bootstrap its first version and trusted publisher
-# as described in docs/RELEASING.md. This setting removes dependence on who
+# as described in docs/contributing/RELEASING.md. This setting removes dependence on who
 # authored a Release PR. `scripts/verify-crates-io.py` checks registry state.
 release_always = true
 

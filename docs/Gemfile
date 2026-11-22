@@ -1,0 +1,15 @@
+# Locked website build environment.
+#
+# The documentation site builds with this exact gem set; CI pins the Ruby
+# interpreter (see .github/workflows/docs.yml). sass-embedded ships
+# prebuilt binaries so no native compilation happens anywhere; the site
+# itself uses plain CSS (docs/assets/site.css), not Sass.
+source "https://rubygems.org"
+
+ruby "~> 3.3"
+
+gem "jekyll", "~> 4.3.4"
+# Jekyll 4 allows sass-converter 2.x (native sassc builds) and 3.x
+# (prebuilt dart-sass binary); pin 3.x to keep the build dependency-free.
+gem "jekyll-sass-converter", "~> 3.0"
+gem "webrick", "~> 1.8"

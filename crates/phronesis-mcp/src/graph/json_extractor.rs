@@ -12,7 +12,7 @@
 //! the graph from inventing dependencies from generic keys that happen to
 //! look like file paths.
 //!
-//! See `docs/superpowers/specs/2026-08-11-json-language-pack-design.md`.
+//! See `docs/archive/designs/2026-08-11-json-language-pack-design.md`.
 
 use super::extract::Extracted;
 use super::model::Edge;

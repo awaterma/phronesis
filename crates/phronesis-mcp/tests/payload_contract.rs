@@ -2,7 +2,7 @@
 //! `phr-mcp` binary and asserts exit code, stdout-JSON, action-log, and
 //! journey-journal effects.
 //!
-//! See `docs/superpowers/specs/2026-07-06-payload-contract-corpus-design.md`.
+//! See `docs/archive/designs/2026-07-06-payload-contract-corpus-design.md`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

@@ -1,4 +1,15 @@
+---
+title: "Downstream Configuration Lifecycle Rules"
+status: proposed
+---
+
 # Downstream Configuration Lifecycle Rules
+
+> **Lifecycle status: needs evidence (proposed)** — no implementation of downstream configuration-lifecycle rules was found in the 2026-11-20 code pass; the closest graph surface, [graph/derive.rs](../../crates/phronesis-mcp/src/graph/derive.rs), contains no downstream-lifecycle rules. The body's original label “deferred handoff specification; query-only pending precision validation” stands.
+>
+> Historical note: no changelog-derived status was ever claimed for this spec; it remains proposed.
+
+
 
 Status: deferred handoff specification; query-only pending precision validation.
 

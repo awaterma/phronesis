@@ -1,4 +1,13 @@
+---
+title: "SPEC: confidence scoring — gating LLM output on grounded outcomes"
+status: shipped
+---
+
 # SPEC: confidence scoring — gating LLM output on grounded outcomes
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: [outcomes/derive.rs](../../crates/phronesis-mcp/src/outcomes/derive.rs), [outcomes/subject.rs](../../crates/phronesis-mcp/src/outcomes/subject.rs), [outcomes/facts.rs](../../crates/phronesis-mcp/src/outcomes/facts.rs), [outcomes/toolchain.rs](../../crates/phronesis-mcp/src/outcomes/toolchain.rs); the `get_confidence` MCP tool lives in [server.rs](../../crates/phronesis-mcp/src/server.rs); exercised by [hook_integration.rs](../../crates/phronesis-mcp/tests/hook_integration.rs) and [unit_cli_integration.rs](../../crates/phronesis-mcp/tests/unit_cli_integration.rs). First release containing the `get_confidence` surface: `v0.16.1` (tag-derived from the introducing commit; the earlier “0.35.0 per CHANGELOG topic match” claim was not code-verified and is superseded).
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

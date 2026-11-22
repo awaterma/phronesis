@@ -38,7 +38,7 @@ phr-mcp init --packs python,python-patterns
 `phr-mcp init --packs go` selects Go starter policy and toolchain definitions.
 `phr-mcp pack validate <dir>`, `pack install <dir>`, and `pack list --json`
 manage bounded external packs. The MCP `list_language_packs` tool reads the
-same live inventory. See the [contributor guide](../../docs/LANGUAGE-PACKS.md)
+same live inventory. See the [contributor guide](../../docs/reference/LANGUAGE-PACKS.md)
 and [Python starter](../../examples/language-packs/python-starter/).
 These source facts and graph edges are advisory; use real Go build/test output
 for outcome signals.

@@ -1,4 +1,13 @@
+---
+title: "SPEC-rhai-code-graph-boundary: Rust ↔ Rhai Interoperability in the Code Graph"
+status: shipped
+---
+
 # SPEC-rhai-code-graph-boundary: Rust ↔ Rhai Interoperability in the Code Graph
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20. Implementation: the Rhai graph boundary in [graph/rhai.rs](../../crates/phronesis-mcp/src/graph/rhai.rs) with the eval-disabled scripting boundary enforced in [predicate_provider.rs](../../crates/phronesis-mcp/src/predicate_provider.rs) and the Rhai engine in [rhai/adapter.rs](../../crates/phronesis-rhai/src/adapter.rs). First release containing the graph Rhai boundary: `v0.28.0` (tag-derived; the earlier “0.38.0 per CHANGELOG” claim was not code-verified and is superseded).
+
+
 
 **Author:** Phronesis Governance Team  
 **Status:** Proposed  

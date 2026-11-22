@@ -1,4 +1,13 @@
+---
+title: "SPEC: fact provenance — trace consequences to data sources"
+status: shipped
+---
+
 # SPEC: fact provenance — trace consequences to data sources
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: `Provenance` (RuleFiring/Lookup) in [consequence.rs](../../crates/phronesis/src/consequence.rs); round-trip and provenance assertions in [types_smoke.rs](../../crates/phronesis/tests/types_smoke.rs) and [pull_smoke.rs](../../crates/phronesis/tests/pull_smoke.rs). Present since the initial release (first contained tag `v0.9.1`, tag-derived).
+
+
 
 **Status:** Draft
 **Author:** user

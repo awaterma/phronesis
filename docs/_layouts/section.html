@@ -1,0 +1,32 @@
+---
+layout: default
+---
+{% assign section_data = nil %}
+{% for s in site.data.navigation.sections %}
+  {% if s.id == page.section %}{% assign section_data = s %}{% endif %}
+{% endfor %}
+{% assign children = site.pages | where: "section", page.section | sort: "nav_order", "last" %}
+<section class="doc section-index">
+  <header class="doc-header">
+    {% if section_data %}
+    <div class="web-kicker">{{ section_data.label }}</div>
+    {% endif %}
+    <h1 class="doc-title">{{ page.title }}</h1>
+    {% if page.description %}
+    <p class="doc-standfirst">{{ page.description }}</p>
+    {% endif %}
+  </header>
+  {% if section_data and section_data.description %}
+  <p>{{ section_data.description }}</p>
+  {% endif %}
+  <ul class="section-children">
+    {% for child in children %}
+      {% if child.url != page.url %}
+      <li>
+        <a href="{{ child.url | relative_url }}">{{ child.title }}</a>
+        {% if child.description %}<span class="section-child-note">{{ child.description }}</span>{% endif %}
+      </li>
+      {% endif %}
+    {% endfor %}
+  </ul>
+</section>
