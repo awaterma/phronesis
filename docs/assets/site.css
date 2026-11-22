@@ -1,0 +1,264 @@
+/* Phronesis documentation site — shared styles for rendered pages.
+ *
+ * Identity preserved from the hand-crafted pages (docs/index.html,
+ * docs/web.css): mineral-technical palette, Manrope headings, JetBrains
+ * Mono code, thin rules, no gradients. Only pages rendered through the
+ * shared Jekyll layouts load this file; the five hand-crafted pages keep
+ * their inline styles untouched.
+ */
+
+:root {
+  color-scheme: light;
+  --paper: #F4F8F7;
+  --paper-deep: #E4EFED;
+  --ink: #102A2E;
+  --ink-soft: #29484B;
+  --mute: #536F70;
+  --rule: #B5CECA;
+  --accent: #0F766E;
+  --accent-deep: #0B514C;
+  --slate: #4657A6;
+  --highlight: #BFE9DF;
+  --measure: 72ch;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Manrope", Georgia, serif;
+  font-size: 17px;
+  line-height: 1.68;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  color: var(--ink);
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  margin: 1.8em 0 0.6em;
+}
+h1 { font-size: 2.4rem; font-weight: 700; margin-top: 0.2em; }
+h2 { font-size: 1.55rem; font-weight: 600; padding-top: 0.5em; border-top: 1px solid var(--rule); }
+h3 { font-size: 1.25rem; font-weight: 600; }
+
+p { margin: 0 0 1.05em; }
+a { color: var(--accent-deep); text-underline-offset: 0.18em; }
+a:hover { color: var(--slate); }
+
+code, pre, .mono {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+code {
+  padding: 0.08em 0.32em;
+  border-radius: 0.25rem;
+  background: var(--paper-deep);
+  color: var(--ink-soft);
+  font-size: 0.86em;
+}
+pre {
+  overflow-x: auto;
+  padding: 1.1rem 1.3rem;
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--accent);
+  border-radius: 0.5rem;
+  background: var(--paper-deep);
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+pre code { padding: 0; background: transparent; color: inherit; }
+
+blockquote {
+  margin: 1.6rem 0;
+  padding: 0.9rem 1.3rem;
+  border-left: 4px solid var(--slate);
+  background: rgba(70 87 166 / 0.07);
+  color: var(--ink-soft);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0 2rem;
+  font-size: 0.93rem;
+}
+th, td { padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+th { color: var(--accent-deep); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
+
+img { max-width: 100%; }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 3rem 0; }
+
+/* ─── Skip link and top navigation ─────────────────────────────── */
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--accent);
+  color: #fff;
+  padding: 0.5rem 1rem;
+  z-index: 200;
+}
+.skip-link:focus { left: 0.5rem; top: 0.5rem; }
+
+.web-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 0.8rem max(1.25rem, calc((100vw - 78rem) / 2));
+  border-bottom: 1px solid var(--rule);
+  background: rgba(244 248 247 / 0.93);
+  backdrop-filter: blur(12px);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.web-nav a { margin-right: 1rem; text-decoration: none; color: var(--accent-deep); }
+.web-nav a:hover { color: var(--slate); }
+.web-nav a[aria-current] { color: var(--ink); border-bottom: 2px solid var(--accent); }
+
+.web-kicker {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  margin-bottom: 0.4rem;
+}
+
+/* ─── Shell: sidebar + main ────────────────────────────────────── */
+
+.site-shell {
+  display: grid;
+  grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr);
+  gap: 2.5rem;
+  width: min(calc(100% - 2.5rem), 78rem);
+  margin-inline: auto;
+  padding-top: 2rem;
+}
+
+.site-sidebar { padding-top: 0.4rem; font-size: 0.9rem; }
+.sidebar-group { margin-bottom: 1.4rem; }
+.sidebar-heading {
+  color: var(--accent-deep);
+  font-weight: 800;
+  font-size: 0.74rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 0.5rem;
+}
+.sidebar-heading-muted a { color: var(--mute); text-decoration: none; }
+.sidebar-heading-muted a:hover { color: var(--accent-deep); }
+.sidebar-list { list-style: none; margin: 0; padding: 0; }
+.sidebar-list li { margin: 0.3rem 0; }
+.sidebar-list a { text-decoration: none; color: var(--ink-soft); display: block; padding: 0.15rem 0; }
+.sidebar-list a:hover { color: var(--accent-deep); }
+.sidebar-list a[aria-current] { color: var(--accent-deep); font-weight: 700; }
+
+.site-main {
+  max-width: var(--measure);
+  padding: 0 0 5rem;
+  outline: none;
+}
+
+/* ─── Breadcrumbs ──────────────────────────────────────────────── */
+
+.breadcrumbs ol {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 1.4rem;
+  padding: 0;
+  color: var(--mute);
+  font-size: 0.82rem;
+}
+.breadcrumbs li { display: flex; gap: 0.35rem; align-items: baseline; }
+.breadcrumbs li + li::before { content: "→"; color: var(--rule); }
+.breadcrumbs a { text-decoration: none; color: var(--accent-deep); }
+.breadcrumbs [aria-current] { color: var(--mute); }
+
+/* ─── Document header ──────────────────────────────────────────── */
+
+.doc-header { margin-bottom: 1.8rem; }
+.doc-title { margin-bottom: 0.35rem; }
+.doc-standfirst { color: var(--ink-soft); font-size: 1.05rem; }
+
+.status {
+  display: inline-block;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid var(--rule);
+  color: var(--ink-soft);
+  background: var(--paper-deep);
+}
+.status-shipped { color: var(--accent-deep); border-color: var(--accent); background: var(--highlight); }
+.status-proposed { color: var(--slate); border-color: var(--slate); }
+.status-partial { color: var(--ink-soft); border-color: var(--accent-deep); }
+.status-historical { color: var(--mute); font-style: italic; }
+/* Decision-record statuses (separate ADR vocabulary, same badge styling) */
+.status-accepted { color: var(--accent-deep); border-color: var(--accent); background: var(--highlight); }
+.status-superseded { color: var(--mute); font-style: italic; }
+
+/* ─── Section index pages ──────────────────────────────────────── */
+
+.section-children { list-style: none; margin: 1.4rem 0; padding: 0; }
+.section-children li {
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.section-children a { font-weight: 700; text-decoration: none; font-size: 1.05rem; }
+.section-child-note { display: block; color: var(--mute); font-size: 0.9rem; margin-top: 0.15rem; }
+
+/* ─── Footer ───────────────────────────────────────────────────── */
+
+.web-footer {
+  width: min(calc(100% - 2.5rem), 78rem);
+  margin-inline: auto;
+  padding: 2rem 0 4rem;
+  border-top: 1px solid var(--rule);
+  color: var(--mute);
+  font-size: 0.85rem;
+}
+
+/* ─── Keyboard visibility ──────────────────────────────────────── */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ─── Mobile ───────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  body { font-size: 16px; }
+  .site-shell {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .site-sidebar {
+    order: 2;
+    border-top: 1px solid var(--rule);
+    padding-top: 1.2rem;
+    margin-top: 1.6rem;
+    columns: 2;
+  }
+  .site-main { order: 1; max-width: none; }
+  .web-nav { font-size: 0.75rem; }
+  .web-nav a { margin-right: 0.6rem; display: inline-block; }
+  table { display: block; overflow-x: auto; }
+}
+
+@media (max-width: 560px) {
+  .site-sidebar { columns: 1; }
+  .breadcrumbs ol { font-size: 0.78rem; }
+  h1 { font-size: 2rem; }
+}
