@@ -1,4 +1,15 @@
+---
+title: "SPEC: Dynamic coverage evidence and change-relevant test selection"
+status: shipped
+---
+
 # SPEC: Dynamic coverage evidence and change-relevant test selection
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20 (code inspection, not changelog matching). Implementation: [coverage/store.rs](../../crates/phronesis-mcp/src/coverage/store.rs), [coverage/import.rs](../../crates/phronesis-mcp/src/coverage/import.rs), [coverage/select.rs](../../crates/phronesis-mcp/src/coverage/select.rs), [coverage/collect.rs](../../crates/phronesis-mcp/src/coverage/collect.rs), [coverage/region_map.rs](../../crates/phronesis-mcp/src/coverage/region_map.rs); behavior tests: [coverage-evidence.feature](../../crates/phronesis-mcp/tests/features/coverage-evidence.feature) + [coverage_steps.rs](../../crates/phronesis-mcp/tests/bdd/coverage_steps.rs); store invariants: [verification/harness.rs](../../crates/phronesis-mcp/verification/harness.rs). First release containing the evidence store: `v0.36.0` (tag-derived from the module-introducing commit; the earlier “first released in 0.37.0 per CHANGELOG topic match” claim was not code-verified and is superseded).
+>
+> Historical note: the body's “Draft” label below is the original draft-stage record, kept as history; it describes the document, not today's implementation.
+
+
 
 **Status:** Draft for review — not approved for implementation
 **Author:** awaterma (agent-drafted, adapted from `REQUIREMENTS-phronesis-coverage-verification-rust-sketch.md`, which was co-authored with ChatGPT/Codex)

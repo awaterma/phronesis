@@ -1,5 +1,5 @@
 //! Sandboxed Rhai evaluator for language-pack adapter scripts
-//! (`docs/superpowers/specs/2026-10-17-go-and-language-packs-design.md`
+//! (`docs/archive/designs/2026-10-17-go-and-language-packs-design.md`
 //! §"Record and runtime contract").
 //!
 //! An adapter script receives one read-only constant per top-level key of

@@ -1,0 +1,19 @@
+{% assign section_data = nil %}
+{% for s in site.data.navigation.sections %}
+  {% if s.id == page.section %}{% assign section_data = s %}{% endif %}
+{% endfor %}
+{% if section_data %}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+  <ol>
+    <li><a href="{{ site.baseurl }}/index.html">Home</a></li>
+    <li>
+      {% if section_data.index %}
+      <a href="{{ site.baseurl }}{{ section_data.index }}">{{ section_data.label }}</a>
+      {% else %}
+      <span>{{ section_data.label }}</span>
+      {% endif %}
+    </li>
+    <li aria-current="page">{{ page.title }}</li>
+  </ol>
+</nav>
+{% endif %}

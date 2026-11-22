@@ -1,0 +1,4 @@
+# Pinned dependencies for scripts/check_docs.py (the shared documentation
+# checker). CI installs exactly this file; locally run:
+#   python3 -m pip install -r scripts/checker-requirements.txt
+pyyaml==6.0.3

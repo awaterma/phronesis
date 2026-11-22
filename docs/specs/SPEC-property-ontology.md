@@ -1,4 +1,13 @@
+---
+title: "SPEC: Verification properties as first-class entities"
+status: shipped
+---
+
 # SPEC: Verification properties as first-class entities
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: `set_property_status` in [server.rs](../../crates/phronesis-mcp/src/server.rs), parameters in [server_params.rs](../../crates/phronesis-mcp/src/server_params.rs); test: [property_status_journal_optout.rs](../../crates/phronesis-mcp/tests/property_status_journal_optout.rs). First release containing the tool: `v0.36.0` (tag-derived from the introducing commit; the earlier “0.37.0 per CHANGELOG” claim was not code-verified and is superseded).
+
+
 
 **Status:** Draft for review — blocked on `SPEC-coverage-evidence.md` Phase 2 (region IDs, `head_revision`, `changed_region`)
 **Author:** awaterma (agent-drafted, adapted from `REQUIREMENTS-phronesis-coverage-verification-rust-sketch.md`)

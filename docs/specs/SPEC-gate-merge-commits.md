@@ -1,4 +1,13 @@
+---
+title: "SPEC: gate merge / rebase / cherry-pick commits, not just `git commit`"
+status: shipped
+---
+
 # SPEC: gate merge / rebase / cherry-pick commits, not just `git commit`
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: commit detection covering `commit|cherry-pick|revert|merge|rebase` in [lifecycle/outcome.rs](../../crates/phronesis-mcp/src/lifecycle/outcome.rs), with exit-code veto behavior tested in [lifecycle_outcome.rs](../../crates/phronesis-mcp/tests/lifecycle_outcome.rs). First release containing that module: `v0.35.0` (tag-derived); the earlier “first released in 0.14.0 per CHANGELOG” claim was not code-verified and is left uncited.
+
+
 
 **Status:** draft
 **Authors:** Claude, Andrew Waterman

@@ -28,5 +28,5 @@ folders so only manifest-declared assets are copied at install. For recovery
 from a digest mismatch, remove `.phronesis/packs/python_starter` in that
 project and reinstall from validated source; never edit the installed bytes.
 
-The [language-pack guide](../../../docs/LANGUAGE-PACKS.md) documents the
+The [language-pack guide](../../../docs/reference/LANGUAGE-PACKS.md) documents the
 manifest, record templates, sandbox, evidence limits, and Go starter.

@@ -1,4 +1,13 @@
+---
+title: "Structural starter rules and advisory confidence gates"
+status: shipped
+---
+
 # Structural starter rules and advisory confidence gates
+
+> **Lifecycle status: shipped** — reconciled against code on 2026-11-20. Implementation: the `migrate-extracted-rules` conversion in [migrate_extracted.rs](../../crates/phronesis-mcp/src/migrate_extracted.rs) (wired as a CLI subcommand in [main.rs](../../crates/phronesis-mcp/src/main.rs)) and the structural starter rules it governs in [rules_core.rs](../../crates/phronesis-mcp/src/init/rules_core.rs)/[rules_other.rs](../../crates/phronesis-mcp/src/init/rules_other.rs). First release containing the migration module: `v0.16.2` (tag-derived; the earlier “0.31.0 per CHANGELOG” claim was not code-verified and is left uncited).
+
+
 
 Status: Implemented
 

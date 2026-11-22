@@ -1764,7 +1764,7 @@ impl EpistemeMcp {
 }
 
 /// The `instructions` string a connected MCP client receives in
-/// `ServerInfo`: a compact version of `docs/FOR_AGENTS.md`. Every backticked
+/// `ServerInfo`: a compact version of `docs/guides/FOR_AGENTS.md`. Every backticked
 /// snake_case name here must be a registered tool — see
 /// `server_instructions_tests`.
 /// Default cap on `select_tests` results: static reach is transitive, so a

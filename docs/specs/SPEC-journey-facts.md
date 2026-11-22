@@ -1,4 +1,13 @@
+---
+title: "SPEC: journey facts — repo-scale, session-scale predicates"
+status: shipped
+---
+
 # SPEC: journey facts — repo-scale, session-scale predicates
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: [journey/mod.rs](../../crates/phronesis-mcp/src/journey/mod.rs) with [journal.rs](../../crates/phronesis-mcp/src/journey/journal.rs), [derive.rs](../../crates/phronesis-mcp/src/journey/derive.rs), [tagger.rs](../../crates/phronesis-mcp/src/journey/tagger.rs), rendering in [journey_cli.rs](../../crates/phronesis-mcp/src/journey_cli.rs); tests: [journey_derive.rs](../../crates/phronesis-mcp/tests/journey_derive.rs), [journey_tagger.rs](../../crates/phronesis-mcp/tests/journey_tagger.rs), [journey_journal.rs](../../crates/phronesis-mcp/tests/journey_journal.rs), [journey_hook_integration.rs](../../crates/phronesis-mcp/tests/journey_hook_integration.rs). First release containing the journey module: `v0.16.1` (tag-derived; the earlier “first released in 0.14.0 per CHANGELOG” claim was not code-verified and is left uncited).
+
+
 
 **Status:** draft (revised 2026-06-19)
 **Authors:** Claude, Andrew Waterman

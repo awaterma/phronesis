@@ -1,0 +1,101 @@
+# Phronesis documentation website configuration.
+#
+# The site source is this directory (docs/), so the same markdown that is
+# read on GitHub is rendered here. Canonical Markdown pages render with
+# shared layouts, including pages without YAML front matter. The five hand-crafted pages (index, explainer,
+# catalogue, guide, changelog) are static HTML and keep their published
+# URLs and visual identity untouched.
+#
+# Build: bundle exec jekyll build   (see .github/workflows/docs.yml)
+# Checks: python3 scripts/check_docs.py --source-only   (before build)
+#         python3 scripts/check_docs.py --site docs/_site   (after build)
+
+title: Phronesis
+email: andrew@waterman.dev
+description: >-
+  A RETE rules engine that enforces project conventions from disk, outside
+  the LLM context window.
+url: https://awaterma.github.io
+baseurl: /phronesis
+
+markdown: kramdown
+highlighter: rouge
+kramdown:
+  toc_levels: 2..3
+
+# Pages use Jekyll's "pretty" style: rendered section pages live at
+# <section>/<page>/ while the five hand-crafted .html pages keep their
+# published URLs untouched.
+permalink: pretty
+
+# Keep the published artifact free of historical material, agent-local
+# state, and raw run logs. The curated archive remains public in Git;
+# contributor documentation links to it instead of the website.
+include:
+  # Jekyll skips dotfiles unless listed; the artifact must carry .nojekyll
+  # so GitHub Pages does not re-run Jekyll over the built output.
+  - .nojekyll
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+  - archive
+  - superpowers
+  # Hidden agent/local state must never ship. Jekyll's exclude does not
+  # expand ".*" for directories, so the known state dirs are listed; the
+  # rendered exclusion audit flags any other hidden entry that leaks.
+  - .scratch
+  - .superpowers
+  - .phronesis
+  - .jekyll-cache
+  - "*.log"
+  - "*.bak"
+
+defaults:
+  - scope:
+      path: tutorials
+    values:
+      layout: doc
+      section: tutorials
+  - scope:
+      path: guides
+    values:
+      layout: doc
+      section: guides
+  - scope:
+      path: reference
+    values:
+      layout: doc
+      section: reference
+  - scope:
+      path: architecture
+    values:
+      layout: doc
+      section: architecture
+  - scope:
+      path: decisions
+    values:
+      layout: doc
+      section: decisions
+  - scope:
+      path: specs
+    values:
+      layout: doc
+      section: specs
+  - scope:
+      path: contributing
+    values:
+      layout: doc
+      section: contributing
+  - scope:
+      path: archive
+    values:
+      layout: doc
+      section: archive
+
+# Section navigation is data-driven so content pages stay declarative:
+# each entry needs a label and the path of its index page. Section index
+# pages use the `section` layout and list their children automatically.
+# The classic five pages above keep their hand-crafted look; this data
+# only drives the shared layouts (sidebar, breadcrumbs, top nav).

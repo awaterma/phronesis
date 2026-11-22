@@ -1,4 +1,13 @@
+---
+title: "SPEC: Recovering dynamic-dispatch reach in the resolver, without guessing"
+status: proposed
+---
+
 # SPEC: Recovering dynamic-dispatch reach in the resolver, without guessing
+
+> **Lifecycle status: needs evidence (proposed)** — the draft is marked “not approved for implementation” and no dispatch-recovery implementation matching its design was identified in [graph/resolve.rs](../../crates/phronesis-mcp/src/graph/resolve.rs) or [graph/derive.rs](../../crates/phronesis-mcp/src/graph/derive.rs) during the 2026-11-20 pass. The reach substrate it reuses (`tested_by`, `test_reaches`, coverage fallback) does exist via [SPEC-triple-store-rete.md](SPEC-triple-store-rete.md) and [SPEC-coverage-evidence.md](SPEC-coverage-evidence.md).
+
+
 
 **Status:** Draft for review — not approved for implementation
 **Author:** w-S5-sonnet (swarm worker, agent-drafted)

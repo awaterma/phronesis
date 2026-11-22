@@ -1,4 +1,15 @@
+---
+title: "SPEC: Structural Graph Facts for the RETE Engine"
+status: shipped
+---
+
 # SPEC: Structural Graph Facts for the RETE Engine
+
+> **Lifecycle status: shipped** — reconciled against code and tests on 2026-11-20. Implementation: [graph/model.rs](../../crates/phronesis-mcp/src/graph/model.rs), [graph/derive.rs](../../crates/phronesis-mcp/src/graph/derive.rs), [graph/extract.rs](../../crates/phronesis-mcp/src/graph/extract.rs), [graph/query.rs](../../crates/phronesis-mcp/src/graph/query.rs); tests in [graph/unit/tests.rs](../../crates/phronesis-mcp/src/graph/unit/tests.rs). First release containing the graph module: `v0.23.0` (tag-derived; agrees with the earlier changelog-derived claim).
+>
+> Historical note: the body's “Phase One implemented” label is consistent with this status and is kept as the original record.
+
+
 
 **Status:** Phase One implemented on `feat/structural-graph-facts`; measurements in §2.3 and §10
 **Target release:** 0.23.0

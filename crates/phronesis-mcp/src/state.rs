@@ -22,6 +22,7 @@ const ENTRIES: &[(&str, &str, bool)] = &[
     ("kernel.md", "authored", false),
     ("durable.md", "authored", false),
     ("context.json", "authored", false),
+    ("decision-store.json", "authored", true),
     ("journey.json", "authored", false),
     ("confidence.json", "authored", false),
     ("bugs.json", "authored", false),

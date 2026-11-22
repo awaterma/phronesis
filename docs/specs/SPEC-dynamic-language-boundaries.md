@@ -1,4 +1,15 @@
+---
+title: "Dynamic Language Boundary Graph"
+status: partial
+---
+
 # Dynamic Language Boundary Graph
+
+> **Lifecycle status: partially implemented** — reconciled against code on 2026-11-20. Shipped part: language-qualified graph nodes with cross-language `imports` edges (intra-crate vs test-import distinction) in [graph/derive.rs](../../crates/phronesis-mcp/src/graph/derive.rs). Gaps: the wider boundary-node design in this specification was not verified against code this pass.
+>
+> Historical note: the body's “Status: implementation specification” stands for the parts not yet found in code.
+
+
 
 Status: implementation specification.
 

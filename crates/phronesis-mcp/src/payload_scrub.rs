@@ -55,8 +55,8 @@
 //! content contains no secrets. Review scrubbed fixtures before committing
 //! them.
 //!
-//! See `docs/superpowers/specs/2026-07-06-payload-contract-corpus-design.md`
-//! and `docs/superpowers/specs/2026-07-12-evidence-integrity-hardening.md`.
+//! See `docs/archive/designs/2026-07-06-payload-contract-corpus-design.md`
+//! and `docs/archive/designs/2026-07-12-evidence-integrity-hardening.md`.
 
 use std::sync::OnceLock;
 
