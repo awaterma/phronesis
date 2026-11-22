@@ -67,6 +67,31 @@ fn decision_new_refuses_to_overwrite_existing() {
 }
 
 #[test]
+fn decision_new_prefers_canonical_docs_decisions() {
+    // A project that adopted the canonical directory gets new decisions
+    // there; the legacy location is not created.
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("docs/decisions")).unwrap();
+
+    let out = run_decision_new(dir.path(), "canonical-decision");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let canonical = dir.path().join("docs/decisions");
+    let files: Vec<_> = fs::read_dir(&canonical)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("md"))
+        .collect();
+    assert_eq!(files.len(), 1);
+    let content = fs::read_to_string(files[0].path()).unwrap();
+    assert!(content.contains("id: canonical-decision"));
+    assert!(!dir.path().join(".phronesis/wiki/decisions").exists());
+}
+
+#[test]
 fn decision_new_rejects_invalid_slug() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join(".phronesis/wiki/decisions")).unwrap();
