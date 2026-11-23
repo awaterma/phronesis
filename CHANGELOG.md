@@ -6,6 +6,25 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Embedding hosts
+
+- Add `execute_agenda_items_for_fact` and `ExecutedActivation` under
+  `embedding-host`, preserving normal firing order and untouched pending work.
+- Add `begin_ordered_batch` for unbatched-equivalent activation order. It keeps
+  incremental processing (no coalescing speedup), allows same-mode nesting,
+  and rejects mixed modes. The existing fast batch remains available.
+- Record atomic fact deltas, test fault injection, and mutation observers as
+  proposed follow-ups, without adding those APIs.
+
+### Added
+
+- **First governed session onboarding.** A disposable tutorial demonstrates allowed
+  and blocked edits, explains host trust, and provides executable setup checks.
+  `phr-mcp doctor` inspects the running binary, project rules, and Claude Code
+  hook configuration without repairing or changing the project. Its optional
+  isolated adapter probe reports allow/block evidence separately from host
+  observation; a successful probe does not establish that host hooks ran.
+
 ## [0.41.1]
 
 This patch release fixes incremental RETE matching and Rust unsafe-code auditing.

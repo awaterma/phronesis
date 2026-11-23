@@ -59,3 +59,32 @@ and Gemini CLI.
 ## License
 
 MIT
+
+## Driving an embedding host
+
+Enable `embedding-host` to use
+`ReteNetwork::execute_agenda_items_for_fact(&str)`. It returns
+`Vec<ExecutedActivation>` with the actual `AgendaItem` and its substituted
+`Action` descriptions, selecting matches in salience/FIFO order even behind
+unrelated higher-priority work. Other pending items retain their sequence and
+refraction state. The core does not apply host side effects; the embedding
+host handles the returned actions.
+
+Guard-false matches are discarded and unlatched as in ordinary firing;
+guard errors retain the existing fail-closed action behavior. On an execution
+error, already accumulated results are lost and the failing item is consumed,
+but items not yet selected remain pending. This is not a transaction.
+
+`begin_ordered_batch()` returns the same `FactBatch` guard as `begin_batch()`
+but preserves the ordered activation trace of the equivalent unbatched
+assert/retract sequence, including equal-salience ties. It runs ordinary
+incremental updates and does no closing scan, so it **does not provide the
+fast batch's coalescing speedup**. Same-mode guards may nest and close in any
+order; mixed-mode nesting is rejected before changing batch state. Serialize
+mutation, firing and batch boundaries when a consistent boundary is needed.
+
+The original `begin_batch()` remains the fast option: new matches become
+visible at the final closing scan and equal-salience order may differ. A
+fact-selective drain during a fast batch only sees already-pending items.
+See the [embedding follow-ups](../../docs/specs/SPEC-embedding-host-follow-ups.md)
+for separately proposed atomic deltas, fault injection and observers.

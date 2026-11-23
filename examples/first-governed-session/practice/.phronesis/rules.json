@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "id": "no-tutorial-blocked-marker",
+      "phase": "pre",
+      "priority": 10,
+      "audit": true,
+      "conditions": [
+        {
+          "predicate": "new_content_contains",
+          "args": ["TUTORIAL-BLOCKED-MARKER"]
+        }
+      ],
+      "actions": [
+        {
+          "action_type": "constraint_violation",
+          "params": [
+            "Tutorial rule no-tutorial-blocked-marker: this practice project blocks any edit whose new content contains the literal marker TUTORIAL-BLOCKED-MARKER."
+          ]
+        }
+      ]
+    }
+  ]
+}

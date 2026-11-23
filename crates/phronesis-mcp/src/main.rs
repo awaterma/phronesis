@@ -489,6 +489,30 @@ enum Command {
         #[command(subcommand)]
         cmd: CoverageCmd,
     },
+    /// Read-only diagnosis of hook wiring and rules for a project. Never
+    /// writes to disk and never shells out to configured commands.
+    ///
+    /// With `--probe`, additionally runs a real allow/block check: this
+    /// executable (`std::env::current_exe`) against a temporary, isolated
+    /// fixture carrying one known rule — never the real project's rules,
+    /// log, or journal. Probe evidence is reported separately from the
+    /// plain checks and is never promoted to a claim about the real
+    /// project's hook wiring or host trust state.
+    Doctor {
+        /// Project root to diagnose (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Host whose hook config to inspect. Only `claude` is understood
+        /// today; other values report `not_observed` rather than a guess.
+        #[arg(long, default_value = "claude")]
+        host: String,
+        /// Also run the temporary-fixture allow/block probe.
+        #[arg(long)]
+        probe: bool,
+        /// Emit JSON instead of a human-readable report.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -1434,6 +1458,12 @@ async fn main() -> anyhow::Result<()> {
         ),
         Command::Toolchains { json } => handle_toolchains(json),
         Command::Coverage { cmd } => handle_coverage(cmd),
+        Command::Doctor {
+            path,
+            host,
+            probe,
+            json,
+        } => handle_doctor(path, host, probe, json),
         Command::Journey {
             json,
             explain,
@@ -2701,6 +2731,18 @@ fn handle_pack(cmd: PackCmd) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+fn handle_doctor(path: PathBuf, host: String, probe: bool, json: bool) -> anyhow::Result<()> {
+    use phronesis_mcp::doctor;
+    let opts = doctor::DoctorOptions { path, host, probe };
+    let report = doctor::run(&opts);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        doctor::render_table(&report);
+    }
+    std::process::exit(report.exit_code());
 }
 
 fn handle_state(path: PathBuf, json: bool) -> anyhow::Result<()> {

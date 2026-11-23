@@ -15,7 +15,7 @@ One canonical hierarchy. Every active topic lives in exactly one place; start he
 
 Organized by what you are doing:
 
-- **Using Phronesis** on your own repository — start with the [README quick start](../README.md#quick-start), the [tutorials](tutorials/README.md), and [Phronesis for Coding Agents](guides/FOR_AGENTS.md).
+- **Using Phronesis** on your own repository — start with the [first governed session tutorial](tutorials/first-governed-session.md), then the [README quick start](../README.md#quick-start), the [tutorials](tutorials/README.md), and [Phronesis for Coding Agents](guides/FOR_AGENTS.md).
 - **Embedding** the engine — [phronesis-governance](../crates/phronesis-governance/README.md) and the [workspace overview](../README.md#the-workspace).
 - **Extending** — [language packs](reference/LANGUAGE-PACKS.md), [extensible predicates](specs/SPEC-extensible-predicates.md), [participatory governance](architecture/participatory-governance.md).
 - **Contributing** — [`AGENTS.md`](../AGENTS.md) for agent guidance, [contributing/](contributing/README.md) for release and documentation policies.

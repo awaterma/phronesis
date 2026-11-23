@@ -29,7 +29,9 @@
 //! - **`embedding-host`** (off by default) — extends [`ReteNetwork`]'s
 //!   public surface with methods only an external embedding host needs:
 //!   bulk save/restore (`restore_persistent_facts*`), single-step agenda
-//!   (`execute_next_agenda_item`), batch-retraction id collection
+//!   (`execute_next_agenda_item`), fact-scoped agenda drive
+//!   (`execute_agenda_items_for_fact`), an ordered, trace-preserving batch
+//!   mode (`begin_ordered_batch`), batch-retraction id collection
 //!   (`fact_ids_matching`), and instrumentation getters
 //!   (`get_performance_stats`, `get_rules_count`, …). The default surface
 //!   equals what the bundled MCP consumes, so the compiler enforces that
