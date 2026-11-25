@@ -18,7 +18,9 @@ uses **`practice/`**, the original language-independent marker fixture:
 - `src/visit.rs` is an additional non-compiled hook-check fixture.
 
 Copy either fixture into a scratch directory before using it. Neither
-requires user-scope MCP registration. TDD build caches live outside the
+requires user-scope MCP registration. The optional test-selection extension
+records a local Git baseline inside the scratch copy, makes an equivalent
+refactor, and identifies relevant tests through the rebuilt graph. TDD build caches live outside the
 scratch copy and are retained after cleanup.
 
 ## Executable checks
@@ -44,6 +46,15 @@ Doctor checks fail by default when the binary lacks the command;
 case because its setup runs doctor. `--list` shows all cases. `--keep` retains
 the scratch projects and TDD `setup.log`, `red.log`, `blocked-write.log`, and
 `green.log`; Cargo caches are retained separately even without `--keep`.
+
+The `tdd_selection` case also runs the published local Git baseline, refactor,
+graph rebuild and selection commands. It verifies that exactly the two visit
+tests are selected with `static_reach` evidence, that the unrelated package
+metadata test is excluded, and that the two explicit Cargo commands each run
+one test. `--keep` additionally retains `selection-baseline.log`,
+`selection.log`, `selected-test-runs.log` and `selected-tests.json` beside the practice copy. The JSON lives outside
+the project so writing diagnostic output does not make the graph stale.
+These observations are not a runtime coverage percentage.
 
 These are direct hook checks, **not a live agent session**: the checker sends
 proposals to `pre-check` and applies only allowed edits itself. Follow the

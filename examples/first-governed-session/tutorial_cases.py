@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from tdd_cases import check_tdd_walkthrough
+from tdd_cases import check_tdd_selection, check_tdd_walkthrough
 
 from tutorial_support import (
     EXAMPLE_DIR,
@@ -714,6 +714,7 @@ def check_doctor_malformed_rules(phr_mcp, project, env, result):
 
 CHECKS = [
     ("tdd_walkthrough", check_tdd_walkthrough, "doctor"),
+    ("tdd_selection", check_tdd_selection, "doctor"),
     ("fixtures", check_fixtures, "none"),
     ("missing_executable", check_missing_executable, "none"),
     ("documented_setup", check_documented_setup, "doctor"),

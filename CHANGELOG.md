@@ -27,6 +27,8 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 - **First governed session onboarding.** A disposable Rust tutorial demonstrates test-first
   development: a behavioral assertion fails, a structural rule blocks a proposed
   `.unwrap()` call, and a compliant implementation passes the unchanged tests.
+  An optional refactor uses the code graph to select relevant tests, excludes an
+  unrelated control test, and runs the selected Cargo tests individually.
   Retain the marker-based installation check and detailed setup troubleshooting.
   Executable checks validate the published red/block/green path; they do not
   establish a live-host invocation or enforce TDD chronology.

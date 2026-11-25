@@ -12,6 +12,8 @@ Historical plans, reviews, reports, and superseded designs, preserved intact. Ev
 
 Recent validation records:
 
+- [Governed TDD walkthrough and selective tests](reports/2026-11-25-tdd-walkthrough.md) — real headless host acceptance, narrow fixes, executable graph-selection evidence, and remaining gaps.
+
 - [First governed session and embedding-host APIs](reports/2026-11-22-first-governed-session.md) — independent walkthrough, host evidence, checks, and explicit gaps.
 
 Pointers to still-relevant current material:

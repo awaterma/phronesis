@@ -187,7 +187,94 @@ Look for a `pre_check` record with `exit: 2` and `blocked_by` naming
 observed host action; they do not independently prove enforcement or TDD
 chronology. Keep the red/green output separately if you want a durable record.
 
-## Step 6 — Clean up and take it to your project
+## Step 6 — Optional: find tests for a changed function
+
+Phronesis can also help choose what to run after an edit. This extension uses
+**static call relationships**, not imported runtime coverage. Keep working
+in the same practice copy; no additional packages are needed.
+
+First ask the agent to append this unrelated control test to `tests/visits.rs`.
+It checks package metadata, never calls `visits_today`, and makes it visible
+whether selection narrows the work:
+
+<!-- check: select-control -->
+```rust
+#[test]
+fn package_name_is_stable() {
+    assert_eq!(env!("CARGO_PKG_NAME"), "visit-counter");
+}
+```
+
+In a terminal in the practice copy, run all three tests and record a local
+Git baseline. This creates one commit **only in the disposable example**;
+there is no remote and nothing is pushed. The command-scoped identity avoids
+requiring or changing your personal Git identity. Do this before the next edit:
+
+<!-- check: select-baseline -->
+```sh
+cargo test --offline -j 1 --test visits
+git init -q
+git add Cargo.toml src/lib.rs tests/visits.rs
+git -c user.name="Tutorial" -c user.email="tutorial@example.invalid" -c commit.gpgsign=false commit -m "Record passing tutorial baseline"
+```
+
+Expect `3 passed; 0 failed`. Now ask the agent to make this small equivalent
+refactor in `src/lib.rs`, leaving all tests unchanged:
+
+<!-- check: select-refactor -->
+```rust
+pub fn visits_today(count: &str) -> usize {
+    count.parse::<usize>().unwrap_or(0)
+}
+```
+
+`unwrap_or(0)` handles failure by returning zero; it is not the prohibited
+`.unwrap()` call. This is a refactor of already-tested behavior, not a new
+requirement needing another red test. Leave this source edit **unstaged**:
+selection currently examines unstaged changes to tracked files. Staging or
+committing it now removes the diff this example needs.
+
+Rebuild the graph after the edit, then inspect the selected tests:
+
+<!-- check: select-select -->
+```sh
+phr-mcp graph rebuild
+phr-mcp coverage select --json > ../selected-tests.json
+cat ../selected-tests.json
+```
+
+Keep this output beside the practice copy, not inside it: a newly created
+JSON file in the project can itself make the graph stale before selection.
+
+Expect `changed_functions` to contain `fn:src/lib.rs::visits_today`,
+`static_reach_available` to be `true`, and two entries with
+`evidence: "static_reach"`:
+
+- `rust:visit-counter#test:visits::parses_valid_count`
+- `rust:visit-counter#test:visits::malformed_count_is_zero`
+
+`package_name_is_stable` should not be selected. The graph connects the two
+visit tests to the changed function; it does not infer that the unrelated
+package check exercises it. If the result is empty or says the graph is
+stale, inspect `phr-mcp graph status` and `git diff`, then rebuild. An empty
+selection is not evidence that no tests are needed.
+
+Rust selections currently report `command: null`. Here `#test:visits` names
+the Cargo integration-test target, and the final component names the test.
+Run the two identified tests explicitly:
+
+<!-- check: select-selected-tests -->
+```sh
+cargo test --offline -j 1 --test visits parses_valid_count -- --exact
+cargo test --offline -j 1 --test visits malformed_count_is_zero -- --exact
+```
+
+Each command should report `1 passed` and `2 filtered out`. Selection helps
+focus feedback; it does not replace your full-suite gate or prove sufficient
+coverage. No runtime coverage was imported in this exercise, and Phronesis
+labels that limit instead of presenting static reach as observed execution.
+
+## Step 7 — Clean up and take it to your project
 
 Exit Claude Code, then return to the original shell:
 
@@ -215,7 +302,9 @@ python3 examples/first-governed-session/check_tutorial.py --phr-mcp "$(command -
 
 The checker executes the published setup and code examples, requires the
 specific failing assertion, tests block/allow decisions, and runs both tests
-green without changing them. `--keep` retains fixtures and red/green logs;
+green without changing them. The optional extension verifies that static
+selection excludes an unrelated test and that each exact Cargo command runs
+only its named test. `--keep` retains fixtures and red/green/selection logs;
 build caches are retained separately even without that option. Existing
 marker and diagnostic checks remain included.
 
