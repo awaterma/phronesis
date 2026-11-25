@@ -32,6 +32,118 @@
           "file_extension_is": "swift"
         }
       ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "rhai"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "js"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "ts"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "jsx"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "tsx"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "go"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "java"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "lua"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "c"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "cc"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "cpp"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "h"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "hpp"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "sh"
+        }
+      ]
     }
   ],
   "modules": []

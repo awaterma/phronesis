@@ -300,6 +300,17 @@ This repository's `change_set.rhai` provider emits
 
 ---
 
+## Test-driven development
+
+Use TDD for features and bug fixes: write a focused behavioral or regression
+test first, run it and observe the intended failure, make the smallest change
+to pass, then refactor with tests green. Preserve the failing and passing test
+evidence. If implementation preceded the test, disclose that sequence;
+retrospective regression checks are not test-first development.
+The local `warn-tdd-before-source-change` hook rule and
+`test-driven-features-and-bugs` capsule remind agents of this requirement;
+they do not prove test chronology.
+
 ## Code Patterns & Conventions
 
 ### Rust Coding Standards

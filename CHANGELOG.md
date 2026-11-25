@@ -10,9 +10,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 - Add `execute_agenda_items_for_fact` and `ExecutedActivation` under
   `embedding-host`, preserving normal firing order and untouched pending work.
-- Add `begin_ordered_batch` for unbatched-equivalent activation order. It keeps
-  incremental processing (no coalescing speedup), allows same-mode nesting,
-  and rejects mixed modes. The existing fast batch remains available.
+  The `_with` callback variant applies host effects between activations, includes
+  newly created matches for the selected fact, and refreshes fire-time guards.
+- Add `begin_ordered_batch` for unbatched-equivalent activation order. It retains
+  incremental assertion order and coalesces redundant retraction scans, allows
+  same-mode nesting, and rejects mixed modes. Rule edits, failed assertions and guard-false drains
+  invalidate scan reuse. The existing fast batch remains available.
+- Reuse a single guard snapshot during collect-only drains while retaining fresh
+  snapshots after host callbacks. When the highest-priority agenda item matches
+  the selected fact, use the native heap pop to avoid a full selection scan.
 - Record atomic fact deltas, test fault injection, and mutation observers as
   proposed follow-ups, without adding those APIs.
 
@@ -24,6 +30,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   hook configuration without repairing or changing the project. Its optional
   isolated adapter probe reports allow/block evidence separately from host
   observation; a successful probe does not establish that host hooks ran.
+
+### Development guidance
+
+- Add reviewed TDD guidance, a source-edit warning rule, and a durable context
+  capsule for features and bug fixes. These reminders do not prove test-first
+  chronology; retrospective regression checks must be identified as such.
 
 ## [0.41.1]
 

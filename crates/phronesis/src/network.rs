@@ -72,14 +72,16 @@ use tracing::{debug, warn};
 ///
 /// `ReteNetwork::begin_ordered_batch` opens the same guard type in
 /// `BatchMode::Ordered` instead of `BatchMode::Fast`. While any ordered
-/// guard is open, `assert_fact`/`retract_fact` run their normal, non-batched
-/// incremental agenda maintenance on every call — the exact same code path
-/// as if no batch were open at all — so the resulting `(rule_id,
-/// bound_fact_ids)` firing trace, including equal-salience ties, is
-/// identical to calling the same `assert_fact`/`retract_fact` sequence with
-/// no batch open. This forgoes the fast mode's coalescing: an ordered scope
-/// pays the same per-fact/per-retract cost as unbatched calls. Because
-/// nothing is ever deferred in ordered mode, closing the outermost ordered
+/// guard is open, assertions insert matches incrementally in their normal
+/// arrival order. Retractions purge obsolete matches immediately, but reuse
+/// a completed full scan instead of rescanning after every removal: removing
+/// facts cannot create new positive structural matches. The first retraction
+/// scans; subsequent retractions skip that scan until a rule change, failed
+/// assertion, store-only restore, or guard-false drain invalidates it. Explicit `update_agenda`
+/// still scans. A stable sweep of N retractions therefore takes one full scan,
+/// with the same `(rule_id, bound_fact_ids)` firing trace and equal-salience
+/// order as the unbatched sweep. Assertions keep their incremental cost.
+/// Because agenda visibility is maintained throughout, the outermost ordered
 /// guard runs **no** catch-up scan at all (unlike fast mode) — such a scan
 /// could rediscover and re-fire an activation whose guard a drain inside the
 /// batch found false and un-latched, which an unbatched caller would not see
@@ -111,9 +113,8 @@ enum BatchMode {
     /// Defer per-fact/per-retract agenda maintenance to the single scan the
     /// outermost guard runs at close (the original, fast-coalescing mode).
     Fast,
-    /// Run normal, non-batched incremental agenda maintenance on every call
-    /// for the whole nesting session, trading away coalescing for an
-    /// unbatched-identical firing trace. The outermost close runs no scan.
+    /// Preserve incremental insertion order and coalesce redundant retraction
+    /// scans. The outermost close runs no scan.
     Ordered,
 }
 
@@ -124,6 +125,10 @@ enum BatchMode {
 struct BatchState {
     depth: usize,
     mode: Option<BatchMode>,
+    /// A successful scan covered all structural matches in this ordered
+    /// session. Assertions maintain that coverage incrementally; retractions
+    /// only remove matches. Rule edits and guard-false unlatching invalidate it.
+    ordered_scan_complete: bool,
 }
 
 impl FactBatch<'_> {
@@ -256,6 +261,13 @@ pub struct ReteNetwork {
     /// batched or not. Lets tests prove N batched mutations collapse into
     /// exactly one scan at outermost close, without relying on wall clock.
     agenda_pass_count: Arc<AtomicU64>,
+    /// Count of working-memory snapshots cloned for `__script__` guard
+    /// judging (`working_memory_facts` invocations) — incremented once per
+    /// clone. Test-only: lets tests prove a snapshot is reused across a
+    /// drain's activations rather than rebuilt per item, without relying on
+    /// wall clock or adding production-visible API/cost.
+    #[cfg(all(test, feature = "embedding-host"))]
+    guard_snapshot_count: Arc<AtomicU64>,
 }
 
 impl Default for ReteNetwork {
@@ -277,6 +289,8 @@ impl ReteNetwork {
             script_evaluator: Box::new(BuiltinScriptEvaluator::new()),
             batch_state: Arc::new(Mutex::new(BatchState::default())),
             agenda_pass_count: Arc::new(AtomicU64::new(0)),
+            #[cfg(all(test, feature = "embedding-host"))]
+            guard_snapshot_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -321,9 +335,8 @@ impl ReteNetwork {
     }
 
     /// Begin (or nest into) an ordered fact batch: for the whole nesting
-    /// session this guard belongs to, `assert_fact`/`retract_fact` run
-    /// their normal, non-batched incremental agenda maintenance on every
-    /// call instead of deferring it — the opt-in, trace-preserving
+    /// session this guard belongs to, assertions retain incremental arrival
+    /// order and retractions coalesce redundant full scans — the trace-preserving
     /// counterpart to [`begin_batch`](Self::begin_batch). See the "Ordered
     /// mode" section on [`FactBatch`] for the exact guarantee and its
     /// same-mode-only nesting rule.
@@ -367,6 +380,9 @@ impl ReteNetwork {
                 state.depth
             )));
         }
+        if state.depth == 0 {
+            state.ordered_scan_complete = false;
+        }
         state.mode = Some(mode);
         state.depth += 1;
         Ok(FactBatch {
@@ -391,6 +407,15 @@ impl ReteNetwork {
         self.agenda_pass_count.load(Ordering::SeqCst)
     }
 
+    /// Number of working-memory snapshots cloned to judge `__script__`
+    /// guards. Test-only: observes snapshot-reuse effectiveness across a
+    /// drain's activations without timing assertions or production-visible
+    /// API/cost.
+    #[cfg(all(test, feature = "embedding-host"))]
+    pub(crate) fn guard_snapshot_count(&self) -> u64 {
+        self.guard_snapshot_count.load(Ordering::SeqCst)
+    }
+
     /// `true` while the open batch-nesting session's fixed mode is
     /// `BatchMode::Fast` — i.e. `assert_fact`/`retract_fact` should defer
     /// their per-fact agenda work. `false` when no session is open, or the
@@ -403,6 +428,30 @@ impl ReteNetwork {
                 .mode,
             Some(BatchMode::Fast)
         ))
+    }
+
+    /// A later retraction must rescan when matches may have become unlatched
+    /// without a new assertion. No lock is retained by callers of this helper.
+    fn invalidate_ordered_scan(&self) -> Result<(), ReteError> {
+        self.batch_state
+            .lock()
+            .map_err(|_| ReteError::poisoned("batch_state"))?
+            .ordered_scan_complete = false;
+        Ok(())
+    }
+
+    async fn update_agenda_after_retraction(&self) -> Result<(), ReteError> {
+        let covered = {
+            let state = self
+                .batch_state
+                .lock()
+                .map_err(|_| ReteError::poisoned("batch_state"))?;
+            state.mode == Some(BatchMode::Ordered) && state.ordered_scan_complete
+        };
+        if covered {
+            return Ok(());
+        }
+        self.update_agenda().await
     }
 
     /// Close one guard; when `depth` reaches 0, the session's mode is
@@ -448,6 +497,16 @@ impl ReteNetwork {
 
     /// Process a new fact through the RETE network
     pub async fn assert_fact(&self, fact: Fact) -> Result<(), ReteError> {
+        let result = self.assert_fact_inner(fact).await;
+        if result.is_err() {
+            // Assertions are not transactional: an error can leave alpha memory
+            // updated before incremental agenda insertion has completed.
+            self.invalidate_ordered_scan()?;
+        }
+        result
+    }
+
+    async fn assert_fact_inner(&self, fact: Fact) -> Result<(), ReteError> {
         let start = Instant::now();
 
         let wme = WorkingMemoryElement::new(fact);
@@ -653,13 +712,14 @@ impl ReteNetwork {
         // instead the next match-or-not for this rule set is picked up by
         // the single scan the outermost guard runs at close, same as every
         // other mutation made during the batch.
-        self.update_agenda().await?;
+        self.update_agenda_after_retraction().await?;
 
         Ok(removed_wme)
     }
 
     /// Add a rule to the RETE network
     pub async fn add_rule(&self, rule: Rule) -> Result<String, ReteError> {
+        self.invalidate_ordered_scan()?;
         let unbound = rule.unbound_action_variables();
         if !unbound.is_empty() {
             warn!(
@@ -875,6 +935,7 @@ impl ReteNetwork {
     /// the deterministic signal batching tests use to prove N staged
     /// mutations collapse into one scan.
     fn full_scan_update_agenda(&self) -> Result<(), ReteError> {
+        self.invalidate_ordered_scan()?;
         // Use the persistent fired_activations set
         let mut fired_activations = self
             .fired_activations
@@ -906,6 +967,14 @@ impl ReteNetwork {
             }
         }
 
+        drop(fired_activations);
+        let mut state = self
+            .batch_state
+            .lock()
+            .map_err(|_| ReteError::poisoned("batch_state"))?;
+        if state.mode == Some(BatchMode::Ordered) {
+            state.ordered_scan_complete = true;
+        }
         self.agenda_pass_count.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -1075,8 +1144,11 @@ impl ReteNetwork {
     }
 
     /// Clone the facts in working memory — the snapshot guards are judged
-    /// against. Taken once per drain: firing never changes working memory.
+    /// against. Ordinary drains reuse it; host-callback drains refresh it after
+    /// each callback because the host may have changed working memory.
     fn working_memory_facts(&self) -> Result<Vec<Fact>, ReteError> {
+        #[cfg(all(test, feature = "embedding-host"))]
+        self.guard_snapshot_count.fetch_add(1, Ordering::SeqCst);
         Ok(self
             .wme_manager
             .lock()
@@ -1127,6 +1199,7 @@ impl ReteNetwork {
                     .lock()
                     .map_err(|_| ReteError::poisoned("fired_activations"))?
                     .remove(&key);
+                self.invalidate_ordered_scan()?;
                 Ok(None)
             }
         }
@@ -1247,6 +1320,59 @@ impl ReteNetwork {
         &self,
         fact_id: &str,
     ) -> Result<Vec<ExecutedActivation>, ReteError> {
+        // No callback runs between activations, so nothing here can change
+        // working memory: the guard snapshot taken for the first activation
+        // stays valid for every later one, and is reused rather than
+        // rebuilt. `execute_agenda_items_for_fact_with` cannot share this
+        // assumption — its callback runs with no engine lock held and may
+        // assert/retract facts — so it refreshes the snapshot after every
+        // activation instead.
+        self.execute_agenda_items_for_fact_inner(fact_id, |_| Ok(()), false)
+    }
+
+    /// Drain matching activations, applying each one's actions through the
+    /// embedding host before selecting the next activation. The callback runs
+    /// without engine locks and may assert/retract facts through this network.
+    /// Newly created activations involving `fact_id` fire in this same call;
+    /// other activations stay pending in their normal order. Guard evaluation
+    /// uses fresh working memory after every callback.
+    ///
+    /// The engine returns action descriptions; it cannot interpret host-specific
+    /// side effects itself. Use this method when those effects can create more
+    /// matches, or `execute_agenda_items_for_fact` to collect actions only.
+    /// A synchronous host can drive the async fact APIs with its executor;
+    /// no engine lock is held while it does so.
+    ///
+    /// Like the ordinary drain, this is not transactional: an engine or callback
+    /// error consumes the current activation and loses the accumulated return
+    /// value, but leaves not-yet-selected items pending. Already applied host
+    /// effects are not rolled back. Record provenance in the callback if it must
+    /// survive a later failure. Serialize other mutation/drain callers and ensure
+    /// host actions terminate (a callback can otherwise generate matches forever).
+    /// During a fast batch only already-visible matches can fire; close the fast
+    /// batch first or use an ordered batch for immediate cascade visibility.
+    #[cfg(feature = "embedding-host")]
+    pub fn execute_agenda_items_for_fact_with(
+        &self,
+        fact_id: &str,
+        apply: impl FnMut(&ExecutedActivation) -> Result<(), ReteError>,
+    ) -> Result<Vec<ExecutedActivation>, ReteError> {
+        self.execute_agenda_items_for_fact_inner(fact_id, apply, true)
+    }
+
+    /// Shared drain loop behind [`execute_agenda_items_for_fact`] and
+    /// [`execute_agenda_items_for_fact_with`]. `refresh_after_apply` is
+    /// `false` for the collect-only, no-op-callback caller (nothing it does
+    /// can change working memory, so the guard snapshot survives the whole
+    /// drain) and `true` for the callback variant, whose callback may
+    /// assert/retract facts between activations.
+    #[cfg(feature = "embedding-host")]
+    fn execute_agenda_items_for_fact_inner(
+        &self,
+        fact_id: &str,
+        mut apply: impl FnMut(&ExecutedActivation) -> Result<(), ReteError>,
+        refresh_after_apply: bool,
+    ) -> Result<Vec<ExecutedActivation>, ReteError> {
         let mut executed = Vec::new();
         let mut facts = None;
         loop {
@@ -1264,7 +1390,13 @@ impl ReteNetwork {
                 .lock()
                 .map_err(|_| ReteError::poisoned("production_network"))?
                 .execute_agenda_item(&item)?;
-            executed.push(ExecutedActivation { item, actions });
+            let activation = ExecutedActivation { item, actions };
+            apply(&activation)?;
+            executed.push(activation);
+            if refresh_after_apply {
+                // Host actions may change facts used by subsequent script guards.
+                facts = None;
+            }
         }
 
         Ok(executed)
@@ -1592,6 +1724,7 @@ impl ReteNetwork {
     /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
     #[cfg(feature = "embedding-host")]
     pub fn restore_persistent_facts_sync(&self, facts: Vec<Fact>) -> Result<(), ReteError> {
+        self.invalidate_ordered_scan()?;
         let mut wme_manager = self
             .wme_manager
             .lock()
@@ -1629,6 +1762,7 @@ impl ReteNetwork {
 
     /// Remove a rule from the production network by its ID
     pub fn remove_rule(&self, rule_id: &str) -> Result<(), ReteError> {
+        self.invalidate_ordered_scan()?;
         let mut production_network = self
             .production_network
             .lock()

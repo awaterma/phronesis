@@ -37,6 +37,8 @@ Canonical ADRs live in this directory (`docs/decisions/`). The migration of the 
 - [Warn when the edited file's module participates in an import cycle](2026-07-29-import-cycle-detection.md)
 - [Warn when production code adds a panic-capable call with no direct test](2026-07-29-untested-risky-call.md)
 
+- [Test-driven development for features and bug fixes](2026-11-23-test-driven-features-and-bugs.md)
+
 ## Working with decisions
 
 - Create: `phr-mcp decision new <slug>` scaffolds a page here.

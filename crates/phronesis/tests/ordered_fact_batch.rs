@@ -1,6 +1,5 @@
-//! `ReteNetwork::begin_ordered_batch` — the opt-in batch mode that trades
-//! away the fast batch's coalescing for an unbatched-identical firing
-//! trace. Each test runs the same `assert_fact`/`retract_fact` sequence
+//! `ReteNetwork::begin_ordered_batch` — coalesces retraction scans while
+//! preserving the unbatched firing trace and incremental assertion order. Each test runs the same `assert_fact`/`retract_fact` sequence
 //! twice — once with no batch, once wrapped in an ordered batch (or mixed
 //! with a fast batch) — and compares the resulting `(rule_id,
 //! bound_fact_ids)` trace instead of asserting against the implementation.
@@ -309,4 +308,162 @@ async fn legacy_fast_only_nesting_behavior_is_retained() {
     outer.close().unwrap();
     assert_eq!(net.agenda_pass_count(), passes_before + 1);
     assert_eq!(net.fire_all_consequences().unwrap().len(), 6);
+}
+
+/// A command's temporary-fact sweep has an actual scan reduction, not merely
+/// an order-preserving guard around the unbatched work.
+#[tokio::test]
+async fn ordered_sweep_coalesces_32_retraction_scans_and_preserves_arrival_order() {
+    async fn run(ordered: bool) -> (Vec<(String, Vec<String>)>, u64) {
+        let net = ReteNetwork::new();
+        add_rules(&net, &join_rules()).await;
+        for i in 0..32 {
+            net.assert_fact(fact(&format!("temp-{i}"), "temp", &["v"]))
+                .await
+                .unwrap();
+        }
+        net.assert_fact(fact("old-p", "p", &["old"])).await.unwrap();
+        let before = net.agenda_pass_count();
+        let batch = ordered.then(|| net.begin_ordered_batch().unwrap());
+        for i in 0..32 {
+            net.retract_fact(&format!("temp-{i}")).await.unwrap();
+            if i % 4 == 0 {
+                let value = format!("value-{i}");
+                net.assert_fact(fact(&format!("p{i}"), "p", &[&value]))
+                    .await
+                    .unwrap();
+                net.assert_fact(fact(&format!("q{i}"), "q", &[&value]))
+                    .await
+                    .unwrap();
+            }
+        }
+        if let Some(batch) = batch {
+            batch.close().unwrap();
+        }
+        (
+            trace(&net.fire_all_consequences().unwrap()),
+            net.agenda_pass_count() - before,
+        )
+    }
+    let (expected, ordinary_scans) = run(false).await;
+    let (actual, ordered_scans) = run(true).await;
+    assert_eq!(actual, expected);
+    assert!(!actual.is_empty());
+    assert_eq!(ordinary_scans, 32);
+    assert_eq!(ordered_scans, 1);
+}
+
+#[tokio::test]
+async fn ordered_scan_is_invalidated_by_guard_false_drain() {
+    let net = ReteNetwork::new();
+    net.add_rule(rule(
+        "guarded",
+        1,
+        vec![
+            cond("p", &["?x"]),
+            Condition {
+                predicate: "__script__".into(),
+                args: vec![],
+                script: Some("facts_contain('ready', ['*'])".into()),
+            },
+        ],
+    ))
+    .await
+    .unwrap();
+    for (id, predicate) in [("p", "p"), ("t1", "temp"), ("t2", "temp"), ("t3", "temp")] {
+        net.assert_fact(fact(id, predicate, &["v"])).await.unwrap();
+    }
+    let batch = net.begin_ordered_batch().unwrap();
+    let before = net.agenda_pass_count();
+    net.retract_fact("t1").await.unwrap();
+    assert_eq!(net.agenda_pass_count(), before + 1);
+    assert!(net.fire_all_consequences().unwrap().is_empty());
+    net.assert_fact(fact("ready", "ready", &["v"]))
+        .await
+        .unwrap();
+    // No new p assertion: only the full scan can rediscover its unlatched match.
+    net.retract_fact("t2").await.unwrap();
+    assert_eq!(net.agenda_pass_count(), before + 2);
+    assert_eq!(
+        trace(&net.fire_all_consequences().unwrap()),
+        [("guarded".into(), vec!["p".into()])]
+    );
+    net.retract_fact("t3").await.unwrap();
+    assert_eq!(net.agenda_pass_count(), before + 2);
+    batch.close().unwrap();
+}
+
+#[tokio::test]
+async fn ordered_scan_is_invalidated_by_rule_changes_and_resets_between_sessions() {
+    let net = ReteNetwork::new();
+    add_rules(&net, &equal_salience_rules()).await;
+    for (id, predicate) in [
+        ("p", "p"),
+        ("t1", "temp"),
+        ("t2", "temp"),
+        ("t3", "temp"),
+        ("t4", "temp"),
+    ] {
+        net.assert_fact(fact(id, predicate, &["v"])).await.unwrap();
+    }
+    let batch = net.begin_ordered_batch().unwrap();
+    net.retract_fact("t1").await.unwrap();
+    let before = net.agenda_pass_count();
+    // Existing alpha state holds p; a newly installed rule must be discovered.
+    net.add_rule(rule("new", 5, vec![cond("p", &["?x"])]))
+        .await
+        .unwrap();
+    net.retract_fact("t2").await.unwrap();
+    assert_eq!(net.agenda_pass_count(), before + 1);
+    assert!(
+        net.agenda_snapshot()
+            .unwrap()
+            .iter()
+            .any(|a| a.rule.id == "new")
+    );
+    net.remove_rule("new").unwrap();
+    net.add_rule(rule("new", 5, vec![cond("p", &["?x"])]))
+        .await
+        .unwrap();
+    net.retract_fact("t3").await.unwrap();
+    assert_eq!(net.agenda_pass_count(), before + 2);
+    assert_eq!(
+        net.agenda_snapshot()
+            .unwrap()
+            .iter()
+            .filter(|a| a.rule.id == "new")
+            .count(),
+        1
+    );
+    batch.close().unwrap();
+    let next = net.begin_ordered_batch().unwrap();
+    net.retract_fact("t4").await.unwrap();
+    assert_eq!(net.agenda_pass_count(), before + 3);
+    next.close().unwrap();
+}
+
+#[tokio::test]
+async fn store_only_restore_stays_out_of_agenda_during_ordered_batch() {
+    let net = ReteNetwork::new();
+    add_rules(&net, &equal_salience_rules()).await;
+    for id in ["t1", "t2"] {
+        net.assert_fact(fact(id, "temp", &["v"])).await.unwrap();
+    }
+    let batch = net.begin_ordered_batch().unwrap();
+    net.retract_fact("t1").await.unwrap();
+    net.restore_persistent_facts_sync(vec![fact("restored", "p", &["v"])])
+        .unwrap();
+    assert!(
+        net.get_all_wmes()
+            .await
+            .unwrap()
+            .iter()
+            .any(|w| w.id == "restored")
+    );
+    net.retract_fact("t2").await.unwrap();
+    batch.close().unwrap();
+    assert!(
+        net.agenda_snapshot().unwrap().is_empty(),
+        "store-only restore must not propagate to alpha/beta or activate a rule"
+    );
 }

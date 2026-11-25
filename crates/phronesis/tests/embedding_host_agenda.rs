@@ -358,3 +358,204 @@ async fn multiple_selected_activations_preserve_order_bindings_and_refraction() 
         (before[0].id.clone(), before[0].seq)
     );
 }
+
+/// The host applies actions before the next selection. New joins involving the
+/// selected fact cascade immediately; newly created unrelated work stays pending.
+#[test]
+fn host_callback_cascades_with_fresh_guards_and_preserves_unrelated_work() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let net = ReteNetwork::new();
+    let asserting = |id: &str, priority, conditions, assertions: &[(&str, &str)]| {
+        let mut r = rule(id, priority, conditions);
+        r.actions = assertions
+            .iter()
+            .map(|(id, predicate)| Action {
+                action_type: "assert".into(),
+                params: vec![id.to_string(), predicate.to_string(), "?x".into()],
+                ..Default::default()
+            })
+            .collect();
+        r
+    };
+    runtime.block_on(async {
+        for r in [
+            asserting(
+                "root",
+                30,
+                vec![cond("p", &["?x"]), script("facts_contain('p', ['*'])")],
+                &[("q1", "q"), ("ready1", "ready"), ("new-other", "u")],
+            ),
+            asserting(
+                "middle",
+                25,
+                vec![cond("p", &["?x"]), cond("q", &["?x"])],
+                &[("s1", "s")],
+            ),
+            rule("last", 20, vec![cond("p", &["?x"]), cond("s", &["?x"])]),
+            rule(
+                "guard-later",
+                1,
+                vec![cond("p", &["?x"]), script("facts_contain('ready', ['*'])")],
+            ),
+            rule("unrelated", 100, vec![cond("u", &["?x"])]),
+        ] {
+            net.add_rule(r).await.unwrap();
+        }
+        net.assert_fact(fact("old-other", "u", &["old"]))
+            .await
+            .unwrap();
+        net.assert_fact(fact("target", "p", &["value"]))
+            .await
+            .unwrap();
+    });
+    let old_other = net
+        .agenda_snapshot()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.rule.id == "unrelated")
+        .unwrap();
+    // Ordered scopes support immediate visibility while applying host effects.
+    let batch = net.begin_ordered_batch().unwrap();
+    let mut recorded = Vec::new();
+    let executed = net
+        .execute_agenda_items_for_fact_with("target", |activation| {
+            recorded.push(activation.item.id.clone());
+            for a in &activation.actions {
+                if a.action_type == "assert" {
+                    runtime.block_on(net.assert_fact(fact(
+                        &a.params[0],
+                        &a.params[1],
+                        &[&a.params[2]],
+                    )))?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    batch.close().unwrap();
+    assert_eq!(
+        executed
+            .iter()
+            .map(|a| a.item.rule.id.as_str())
+            .collect::<Vec<_>>(),
+        ["root", "middle", "last", "guard-later"]
+    );
+    assert_eq!(
+        recorded,
+        executed
+            .iter()
+            .map(|a| a.item.id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        executed
+            .iter()
+            .all(|a| a.item.wme_list.iter().any(|w| w.id == "target"))
+    );
+    assert_eq!(executed[0].actions[0].params[2], "value");
+    let remaining = net.agenda_snapshot().unwrap();
+    assert_eq!(remaining.len(), 2);
+    assert!(remaining.iter().all(|a| a.rule.id == "unrelated"));
+    assert!(
+        remaining
+            .iter()
+            .any(|a| a.id == old_other.id && a.seq == old_other.seq)
+    );
+    runtime.block_on(net.update_agenda()).unwrap();
+    assert!(
+        net.execute_agenda_items_for_fact("target")
+            .unwrap()
+            .is_empty(),
+        "completed cascade must retain refraction"
+    );
+    assert_eq!(net.execute_all_agenda_items().unwrap().len(), 2);
+}
+
+#[test]
+fn host_callback_failure_leaves_unreached_activations_pending() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let net = ReteNetwork::new();
+    runtime.block_on(async {
+        for (id, priority, predicate) in [
+            ("first", 20, "p"),
+            ("failing", 10, "p"),
+            ("later", 1, "p"),
+            ("other", 100, "q"),
+        ] {
+            net.add_rule(rule(id, priority, vec![cond(predicate, &["?x"])]))
+                .await
+                .unwrap();
+        }
+        net.assert_fact(fact("target", "p", &["v"])).await.unwrap();
+        net.assert_fact(fact("other", "q", &["v"])).await.unwrap();
+    });
+    let expected = net
+        .agenda_snapshot()
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.rule.id == "later" || a.rule.id == "other")
+        .map(|a| (a.id, a.seq))
+        .collect::<Vec<_>>();
+    let mut applied = Vec::new();
+    let result = net.execute_agenda_items_for_fact_with("target", |a| {
+        applied.push(a.item.rule.id.clone());
+        if a.item.rule.id == "failing" {
+            return Err(phronesis::error::ReteError::FactNotFound(
+                "host-input".into(),
+            ));
+        }
+        Ok(())
+    });
+    assert!(
+        matches!(result, Err(phronesis::error::ReteError::FactNotFound(id)) if id == "host-input")
+    );
+    assert_eq!(applied, ["first", "failing"]);
+    assert_eq!(
+        net.agenda_snapshot()
+            .unwrap()
+            .into_iter()
+            .map(|a| (a.id, a.seq))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
+        net.execute_agenda_items_for_fact("target").unwrap()[0]
+            .item
+            .rule
+            .id,
+        "later"
+    );
+}
+
+#[test]
+fn host_callback_retraction_prevents_stale_selected_activations_from_firing() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let net = ReteNetwork::new();
+    runtime.block_on(async {
+        for (id, priority, predicate) in
+            [("first", 20, "p"), ("later", 1, "p"), ("other", 100, "q")]
+        {
+            net.add_rule(rule(id, priority, vec![cond(predicate, &["?x"])]))
+                .await
+                .unwrap();
+        }
+        net.assert_fact(fact("target", "p", &["v"])).await.unwrap();
+        net.assert_fact(fact("other", "q", &["v"])).await.unwrap();
+    });
+    let fired = net
+        .execute_agenda_items_for_fact_with("target", |_| {
+            runtime.block_on(net.retract_fact("target"))?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(fired.len(), 1);
+    assert_eq!(fired[0].item.rule.id, "first");
+    assert_eq!(net.agenda_snapshot().unwrap().len(), 1);
+    assert_eq!(net.agenda_snapshot().unwrap()[0].rule.id, "other");
+}
