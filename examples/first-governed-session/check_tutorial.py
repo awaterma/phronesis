@@ -5,6 +5,7 @@ Verifies the flow documented in docs/tutorials/first-governed-session.md
 inside disposable temporary directories, using only the Python 3 standard
 library. Each check gets its own fresh fixture directory.
 
+    tdd_walkthrough        published red/block/green Rust exercise (requires Cargo)
     fixtures               example files and the deterministic marker rule
     missing_executable     an absent phr-mcp fails loudly, not silently
     setup                  the tutorial's init command wires hooks, MCP

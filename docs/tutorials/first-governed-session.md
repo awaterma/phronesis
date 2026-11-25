@@ -1,314 +1,227 @@
-# First governed session
+# First governed session: finish a task with TDD
 
-Your first end-to-end tour of Phronesis: set up a **disposable** practice
-project, run a pre-flight check, then watch a governed agent make one edit
-that sails through and one that gets blocked — in a real Claude Code session,
-not a simulation. About 20 minutes. Everything happens inside a fresh scratch
-directory that you delete afterwards; your own projects are untouched.
+Build a tiny visit counter with an agent: **write a failing test, observe a
+prohibited implementation being blocked, then finish with passing tests**.
+Tests describe the behavior you need; Phronesis protects a coding constraint
+while you work. Allow about 20 minutes after installing the tools.
 
-> **Binary note.** This tutorial requires the `doctor` feature. Verify it
-> with `phr-mcp doctor --help`; a version string alone is not sufficient for
-> development builds. If your installed release lacks it, build from a
-> source checkout containing this tutorial with
-> `cargo install --path crates/phronesis-mcp`, then check `doctor --help`
-> again.
+The task is small: `visits_today("12")` returns `12`; malformed input such as
+`"many"` returns `0`. The starting implementation returns zero for everything.
+A project rule prohibits `.unwrap()` calls under `src/`, because malformed
+input must not panic. This is a structural Rust rule, not a search for words
+in comments or strings.
 
-**Prerequisites**
+This exercise **demonstrates TDD; it does not enforce test chronology**.
+Phronesis blocks the prohibited call. You and the agent preserve the failing
+and passing test results. The TDD reminder available in Phronesis is guidance,
+not proof that tests came first.
 
-- Claude Code installed (this tutorial's primary host). Codex and Gemini CLI
-  are governed the same way, but the walkthrough below is Claude Code's.
-- `phr-mcp` on your `PATH`. Check with `phr-mcp --version`.
-- A checkout of the Phronesis repository (the practice example and the
-  checker script ship with it). No Rust toolchain is needed at runtime
-  unless you are building from source.
+## Prerequisites
 
-If you are starting without a checkout or binary, install Rust 1.90 or newer
-and Git, then run:
+- Rust 1.90 or newer (`cargo --version`), Git, and a Phronesis checkout.
+- `phr-mcp` on PATH, with `phr-mcp doctor --help` working.
+- Claude Code installed and authenticated. See its
+  [setup instructions](https://code.claude.com/docs/en/setup).
+
+**While this tutorial is under review, check out its PR branch before
+installing:** `git fetch origin feat/first-governed-session`, then
+`git switch feat/first-governed-session` in a clean checkout. An older release
+may not include `doctor`. Source installation uses Cargo's installation
+location; only the practice project and hook settings below are disposable.
+
+If building Phronesis from source, run these commands in its checkout:
 
 ```sh
-git clone https://github.com/awaterma/phronesis.git
-cd phronesis
 cargo install --locked --path crates/phronesis-mcp
 export PATH="$HOME/.cargo/bin:$PATH"
-phr-mcp --version
 phr-mcp doctor --help
 ```
 
-The last command must list `--path`, `--host`, `--probe`, and `--json`.
-If this change is still under review, check out the PR branch before the
-install command; the released binary may not contain `doctor` yet. If you
-already have this checkout, start at the install command in its root.
-Python 3 is needed for the optional executable checker. Claude Code also
-needs its own authenticated account; install and sign in using its
-[official setup instructions](https://code.claude.com/docs/en/setup).
+For installation help, detailed doctor findings, or a language-independent
+marker exercise, see [Verify your installation](verify-installation.md).
 
-**What "governed" means here.** Phronesis does not live in the model's
-context window. Rules sit in `.phronesis/rules.json` on disk, and a **hook**
-— a tiny command your host runs before every tool call — re-reads them and
-returns allow, warn, or block. The MCP server (`phr-mcp serve`) is the
-interactive half: management tools an agent may call. Hooks are the
-enforcement half: the host runs them whether or not the agent cooperates.
-This tutorial wires the hooks and observes them working.
+## Step 1 — Set up the practice copy
 
-Doctor reports configuration, an optional isolated probe, and host-observation
-limits separately. Its JSON fields are described below; human-readable
-message wording may change between versions.
+Run this from the Phronesis checkout root and keep the same shell open:
 
-## Step 0 — Pin your variables
-
-Run this from the top level of your Phronesis checkout, and keep the same
-shell open for the whole tutorial:
-
+<!-- check: tdd-setup -->
 ```sh
 REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 SCRATCH="$(mktemp -d)"
-```
-
-`$REPO` is the absolute checkout path (used by every later step, so nothing
-breaks after `cd`), and `$SCRATCH` is a fresh, collision-free scratch
-directory that disappears when you delete it at the end.
-
-## Step 1 — Copy the disposable practice project
-
-The shipped example is a mini-project with exactly one deterministic
-teaching rule: any edit whose new content contains the plain-text marker
-`TUTORIAL-BLOCKED-MARKER` is blocked by the `pre-check` hook, on any file.
-It is a teaching fixture, not a real coding policy — the point is a
-perfectly predictable rule, not a Rust best practice.
-
-```sh
-cp -R "$REPO/examples/first-governed-session/practice" "$SCRATCH/practice"
-```
-
-The practice copy contains one rule and no host wiring yet. These setup
-steps change only the disposable copy. It contains:
-
-- `.phronesis/rules.json` — the deterministic marker rule,
-  `no-tutorial-blocked-marker`.
-- `src/visit.rs` — an additional source fixture used by the checker.
-- `notes.md` — an ordinary file a plain edit passes and a marker edit fails.
-
-## Step 2 — Govern the copy
-
-```sh
+cp -R "$REPO/examples/first-governed-session/tdd-practice" "$SCRATCH/practice"
 cd "$SCRATCH/practice"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/phronesis-tutorial-target}"
 phr-mcp init --hooks-only
+phr-mcp doctor --host claude --path .
 ```
 
-That is the whole step: `init --hooks-only` writes the host wiring and
-leaves rules files untouched, so the deterministic rule set the copy already
-contains stays exactly as shipped. The wiring for Claude Code is:
+The crate has no dependencies and no tests yet. `init --hooks-only` preserves
+its one teaching rule and writes project hook/MCP configuration. Keep the
+Cargo target path absolute; the default above preserves build artifacts
+outside the scratch directory, including after cleanup.
 
-- `.claude/settings.local.json` — registers `phr-mcp pre-check` on
-  `PreToolUse` (matcher `Edit|Write|MultiEdit|Bash`) and `phr-mcp
-  post-check` on `PostToolUse`, plus lifecycle hooks
-  (`phr-mcp claude-hook <Event>`) for session context.
-- `.mcp.json` — registers the `phronesis` MCP server (`phr-mcp serve`) for
-  this project.
+Expect doctor to report valid rules and local hook wiring. Trust and log
+observations may remain `not_observed`; a zero exit code is not a host verdict.
+Resolve any warnings before continuing. `doctor --probe` is optional and
+exercises only a temporary fixture through `pre-check`, not your live host.
 
-Optionally confirm the wiring with the checker script from the checkout
-(the checker runs this same setup in its own scratch directory and asserts
-the hook-level outcomes shown in Step 5):
+## Step 2 — Start the agent and check the hooks
 
-```sh
-python3 "$REPO/examples/first-governed-session/check_tutorial.py"
-```
-
-## Step 3 — Pre-flight: doctor (configuration observation)
-
-Before opening a session, ask doctor to inspect this directory's
-configuration — plain doctor performs filesystem reads only; it never
-writes, never spawns a process, and never appends to your log:
+From the same shell:
 
 ```sh
-phr-mcp doctor --host claude --path "$SCRATCH/practice"
-phr-mcp doctor --host claude --path "$SCRATCH/practice" --json
-```
-
-Doctor reports one finding per configured concern, each with a status of
-`ok`, `warn`, `fail`, or `not_observed`:
-
-| Finding id | What it reports |
-|---|---|
-| `binary_on_path` | whether the `phr-mcp` your `PATH` finds is the same binary that ran doctor (a `warn` here is normal until you reinstall a new build) |
-| `project_governed` | whether `.phronesis/rules.json` (or a loader) exists at all |
-| `rules_load` | whether the rules file parses cleanly |
-| `host_hooks` | whether `.claude/settings.local.json` wires `pre-check` into `PreToolUse` and `post-check` into `PostToolUse` (only this generated local file is inspected; shared-only settings report `not_observed`, and other host scopes are not merged) |
-| `host_trust` | **always `not_observed`** — doctor cannot see live host trust from local files and never claims it |
-| `log_evidence` | **always `not_observed`** — local log lines are evidence to orient you, never proof the host currently runs these hooks |
-
-Exit codes: `0` when every finding is `ok`/`not_observed`, `1` when the
-worst finding is a `warn`, and `2` when any finding is `fail` or an
-explicit probe fails. Read each warning and resolve it before relying on
-this setup. A different PATH binary means the host may run a different
-version than the one you just checked.
-
-Keep the three kinds of evidence separate in your head — this is the core
-lesson of the tutorial:
-
-| Evidence | Source | What it can tell you |
-|---|---|---|
-| Configuration observation | `doctor` (plain, read-only) | the wiring exists and parses |
-| Probe | `doctor --probe` (explicit; writes its own rule into a disposable OS-temp fixture, calls this executable’s `pre-check` directly twice, deletes the fixture) | this binary’s rule-evaluation path blocks and allows what its fixture demands |
-| Host observation | Step 5, your actual Claude Code session | a real host let one edit through and blocked another |
-
-A probe is never a host observation, and a local log is never proof of
-either. Doctor's `--probe` is optional here; the walkthrough in Step 5 is
-the part that matters, and nothing can substitute for it. When you do run
-it, the observed output looks like this (from an actual doctor build):
-
-> probe: rule=doctor-probe-no-unwrap ok=true
->   blocked_edit_contains_unwrap expect_block=true  exit=2    match=true  rule=doctor-probe-no-unwrap decision=block
->   allowed_edit_no_unwrap       expect_block=false exit=0    match=true  rule=- decision=allow
->   note: evidence from a temporary isolated fixture, exercising only this executable's own `pre-check` code path directly (not through any host adapter); not a claim about the real project's hook wiring, host trust, or that any specific host (Claude, Gemini, Codex, or otherwise) actually invokes it this way.
-
-The probe leaves the real project untouched; its evidence stays in the
-`probe` field of `--json` output, never merged into `findings`, and its
-"ok" never upgrades `host_trust` or `log_evidence` past `not_observed`.
-
-## Step 4 — Open Claude Code in the copy
-
-```sh
-cd "$SCRATCH/practice"
 claude
 ```
 
-Start Claude Code from the same shell so it inherits the `PATH` used above.
-A GUI-launched host may have a different `PATH`; doctor inspects its own
-environment and cannot verify the environment of a separate host process.
+Review the folder trust prompt if shown. Use `/hooks` to confirm
+`phr-mcp pre-check` and `phr-mcp post-check`. Use `/mcp` to inspect and approve
+the project Phronesis server if prompted. Hooks enforce edits; the MCP server
+supplies management tools. See [host setup troubleshooting](verify-installation.md#troubleshooting)
+if either is missing. This walkthrough targets Claude Code; it does not
+establish equivalent behavior in other hosts.
 
-On first interactive open, review and accept Claude Code’s folder-trust
-prompt if shown. Headless invocation has different trust behavior and does
-not validate this interactive step. See the official
-[hook reference](https://code.claude.com/docs/en/hooks) and
-[MCP approval instructions](https://code.claude.com/docs/en/mcp).
-Then confirm the wiring from inside the session:
+## Step 3 — Write the tests, then observe red
 
-- `/mcp` — the `phronesis` server from `.mcp.json` should appear; approve
-  the project MCP server if Claude Code asks.
-- `/hooks` — you should see the `PreToolUse` hook (`phr-mcp pre-check`) and
-  the `PostToolUse` hook (`phr-mcp post-check`) from
-  `.claude/settings.local.json`.
+Ask the agent:
 
-If `/mcp` or `/hooks` shows nothing, see Troubleshooting below. Do not
-proceed to Step 5 on a hunch; the point of this tutorial is to observe, not
-assume.
+> Read src/lib.rs and Cargo.toml. Add tests/visits.rs with the two tests below,
+> using Edit or Write. Do not change src/lib.rs yet. Run the test command and
+> show the failing assertion before proposing any implementation change.
 
-## Step 5 — The governed walkthrough
+<!-- check: tdd-tests -->
+```rust
+use visit_counter::visits_today;
 
-Stay in the Claude Code session and prompt your agent twice.
+#[test]
+fn parses_valid_count() {
+    assert_eq!(visits_today("12"), 12);
+}
 
-**First, the allowed edit.** Prompt something like:
+#[test]
+fn malformed_count_is_zero() {
+    assert_eq!(visits_today("many"), 0);
+}
+```
 
-> Read notes.md, then use Edit or Write to append a line saying the
-> governance setup works. Do not use a shell command.
+Use this command for both the red and green runs:
 
-The agent edits `notes.md` with its normal Edit/Write tool. No rule matches
-an ordinary note, so the `pre-check` hook allows it and the edit goes
-through — governance stays out of the way. That quiet success is half the
-lesson.
+<!-- check: tdd-test-command -->
+```sh
+cargo test --offline -j 1 --test visits
+```
 
-**Then, the blocked edit.** Prompt something like:
+Expected: `parses_valid_count` fails with actual `0` and expected `12`;
+`malformed_count_is_zero` passes. The command exits nonzero (Cargo exit 101).
+A compiler error, missing toolchain or missing test target is **not** the
+intended red result. Preserve this output and confirm `src/lib.rs` is still
+the original stub. Having one test already pass is fine: the other exposes
+the missing behavior.
 
-> Read notes.md, then use Edit or Write to append exactly:
-> TUTORIAL-BLOCKED-MARKER
-> If a hook blocks it, report the rule message and stop. Do not retry with
-> another tool or change the rules.
+## Step 4 — Observe a meaningful policy refusal
 
-The agent proposes an edit whose new content contains the literal marker —
-exactly what the practice rule matches. The host runs the `pre-check` hook
-before the tool call; the hook exits with a block decision, and Claude Code
-**refuses the edit** and shows you the rule's message ("Tutorial rule
-no-tutorial-blocked-marker: …"). This is the boundary doing its job from
-outside the model's context window.
+For a controlled demonstration, deliberately ask for the prohibited shortcut:
 
-**Do not substitute a shell command for this walkthrough.** Piping a fake
-hook payload into `phr-mcp pre-check` yourself (as the checker script does)
-tests the plumbing, not the host: it proves the rule engine fires, but it is
-not an observation of Claude Code enforcing anything. The actual host
-observation — the host declining a real tool call from a real agent — is the
-only evidence that counts for "my session is governed."
+> Replace src/lib.rs with the implementation below using Edit or Write.
+> If Phronesis blocks it, report the rule message and stop. Do not retry via
+> Bash, weaken the rule or modify the tests. This is an intentional policy
+> exercise, not a suggested solution.
 
-**The evidence trail.** After the blocked edit, look at the local action
-log from a terminal:
+<!-- check: tdd-blocked -->
+```rust
+pub fn visits_today(count: &str) -> usize {
+    count.parse::<usize>().unwrap()
+}
+```
+
+The hook should block this real tool call and name
+`tutorial-no-unwrap-in-src`. The implementation would panic for `"many"`;
+Phronesis rejects it before it reaches the file. Ask the agent to read
+`src/lib.rs` again: **the original zero-returning stub must still be there**.
+A refusal without inspecting the resulting file is incomplete evidence.
+
+The tests and rule serve different purposes. The malformed-input test would
+catch this bug at runtime; the rule rejects this prohibited coding construct
+at edit time. One does not replace the other. A real task may never trigger a
+block if the agent proposes a compliant solution immediately.
+
+## Step 5 — Recover, finish the task, and observe green
+
+Now ask:
+
+> Keep both tests unchanged. Handle parse failure explicitly so malformed
+> input returns zero. Use Edit or Write to update src/lib.rs, then rerun the
+> same test command. Show the result and the final file.
+
+One acceptable implementation is:
+
+<!-- check: tdd-green -->
+```rust
+pub fn visits_today(count: &str) -> usize {
+    match count.parse::<usize>() {
+        Ok(value) => value,
+        Err(_) => 0,
+    }
+}
+```
+
+The edit should be allowed, and the same command should report
+`2 passed; 0 failed`. Read the source and tests to confirm the desired behavior
+was implemented without deleting assertions or weakening the policy. There
+is no necessary refactor for this tiny function; if you make one, keep the
+tests green.
+
+**Success means all four observations:** the intended assertion failed
+before implementation; the host refused the `.unwrap()` proposal and left
+the stub intact; the corrected edit succeeded; both unchanged tests passed.
+You have completed a useful requirement, not merely collected a refusal.
+
+To inspect the rule decision, in another terminal opened in the practice
+copy (or after exiting Claude Code), run:
 
 ```sh
 cat .phronesis/log.jsonl
 ```
 
-You should find a `pre_check` entry with `"exit": 2` and a `blocked_by`
-array naming rule `no-tutorial-blocked-marker`, plus the exit-0 entries for
-the allowed edit. Read that log as **unauthenticated evidence, not proof**:
-it is a local file the hook wrote, useful for orienting yourself, and
-trivially fakeable — which is why Step 5's host observation, not the log, is
-the tutorial's success criterion. The same honesty applies in the other
-direction: nothing in the log, and nothing doctor says, should be quoted as
-"my host verified enforcement" unless you actually watched the host block
-the edit in Step 5. When evidence is missing or ambiguous — an unobserved
-trust decision, a host you never watched — the honest verdict is "unknown,"
-and a system that reports unknown is more trustworthy than one that reports
-false positives.
+Look for a `pre_check` record with `exit: 2` and `blocked_by` naming
+`tutorial-no-unwrap-in-src`, alongside allowed edits. Logs corroborate the
+observed host action; they do not independently prove enforcement or TDD
+chronology. Keep the red/green output separately if you want a durable record.
 
-## Step 6 — What just happened
+## Step 6 — Clean up and take it to your project
 
-**The rule, anatomized** (`.phronesis/rules.json`): phase `pre` means the
-`pre-check` hook may block; `new_content_contains "TUTORIAL-BLOCKED-MARKER"`
-matches the literal marker substring in the proposed edit's new content
-(not a regex); the `constraint_violation` action is the message the host
-shows. Real rules compose this with path and other predicates — for
-instance the shipped Rust pack blocks `.unwrap()` only under `src/` — and
-the [rule catalogue](https://awaterma.github.io/phronesis/catalogue.html)
-shows how the mechanics scale from one marker to full packs.
-
-**Hooks vs MCP, again:** the MCP server is a set of tools an agent *may*
-call (`add_rule`, `audit_codebase`, journey and confidence surfaces…). The
-hooks are the part the host *must* run on every Edit/Write/Bash call. If you
-unregister the MCP server, enforcement continues; if you remove the hook
-registrations, enforcement stops — which is why Step 4 had you verify
-`/hooks` specifically.
-
-**Doctor's role:** a read-only pre-flight that inspects configuration so
-you catch wiring mistakes before a session, not during one. It is the
-configuration row of the evidence table, and deliberately nothing more: it
-never observes live host trust (its `host_trust` finding is `not_observed`
-by design), never upgrades local log lines into proof (`log_evidence` is
-`not_observed` even when the log has entries), and never lets probe
-success stand in for a host observation.
-
-## Step 7 — Clean up
+Exit Claude Code, then return to the original shell:
 
 ```sh
 cd "$REPO"
 rm -rf "$SCRATCH"
 ```
 
-The hooks and rules lived in the scratch copy; deleting it removes
-everything. Nothing was written to your home configuration unless you chose
-to run `phr-mcp install` (user-scope MCP registration in `~/.claude.json`),
-which you did not need for this tutorial. In your real projects later,
-`phr-mcp init --packs <languages>` writes the same wiring plus starter
-rules — see the [README quick start](../../README.md#quick-start).
+This removes only the disposable practice copy. The external Cargo build
+cache and installed tools remain. This exercise does not require
+`phr-mcp install` or changing user-scope MCP configuration.
 
-## Troubleshooting
+For a real project, start with its behavioral test and relevant coding
+policies. The Rust starter pack provides a broader `.unwrap()` rule among
+other checks; the [README quick start](../../README.md#quick-start) explains
+`phr-mcp init --packs rust`. The teaching rule here is deliberately narrow.
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `phr-mcp: command not found` | binary not installed or not on `PATH` | install with `cargo install --path crates/phronesis-mcp`; check `echo $PATH`; the checker's `missing_executable` case shows the loud failure you should expect |
-| `phr-mcp doctor` → "unrecognized subcommand" | this binary lacks the doctor feature | check feature availability with `phr-mcp doctor --help`; if absent, install from a source checkout that has it (see the binary note) |
-| doctor exits 1 with a `binary_on_path` warn | the `phr-mcp` on `PATH` differs from the doctor binary you ran | resolve the mismatch before the host walkthrough; reinstall the intended build or correct `PATH`, then run doctor again |
-| `/hooks` shows no Phronesis hooks | `init` was not run in this directory, or the session predates the wiring | re-run `phr-mcp init --hooks-only` in `$SCRATCH/practice`, then start a **new** session there |
-| `/mcp` shows no `phronesis` server | project MCP servers need approval | approve the project server when prompted, or re-check `.mcp.json` |
-| Claude Code asks to trust the folder | normal first-open trust flow | trust it; hooks from `.claude/settings.local.json` are part of that project trust decision |
-| Edits that should block do not | rules file missing or unparseable, or hooks not firing | the checker's `malformed_rules` and `stale_config` cases show the fail-closed behavior to expect: a bad rules file makes `pre-check` exit 2 with an error naming the rule and field; run `python3 "$REPO/examples/first-governed-session/check_tutorial.py"` |
-| Doctor seems to claim things you never observed | you are misreading findings as host observations | re-read Step 3's finding table: `host_trust` and `log_evidence` are always `not_observed`, and only the Step 5 walkthrough is a host observation |
+## Executable checks and their limits
 
-## Where to next
+From the checkout, with Python 3 and Cargo available:
 
-- [Loop-Based Agent Programming](../guides/loop-programming-guide.md) — keep
-  a long propose/act/observe loop on the rails.
-- [Phronesis for Coding Agents](../guides/FOR_AGENTS.md) — evaluate Phronesis
-  read-only on your own repository.
-- The [rule catalogue](https://awaterma.github.io/phronesis/catalogue.html)
-  and the [visual explainer](https://awaterma.github.io/phronesis/explainer.html).
+```sh
+python3 examples/first-governed-session/check_tutorial.py --phr-mcp "$(command -v phr-mcp)" -v --keep
+```
+
+The checker executes the published setup and code examples, requires the
+specific failing assertion, tests block/allow decisions, and runs both tests
+green without changing them. `--keep` retains fixtures and red/green logs;
+build caches are retained separately even without that option. Existing
+marker and diagnostic checks remain included.
+
+The checker sends hook payloads directly and applies only allowed writes.
+It does **not** run an agent or establish host trust. The interactive Steps
+2–5 are the host acceptance exercise. A passing automated check must never
+be reported as an observed live-agent walkthrough.
 
 Back to the [tutorials index](README.md).

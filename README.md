@@ -8,7 +8,7 @@ Rules in Phronesis live on disk, are evaluated by lightweight hooks at the momen
 
 ## First governed session
 
-The [First governed session](docs/tutorials/first-governed-session.md) tutorial walks you through a disposable practice project, a read-only `phr-mcp doctor` pre-flight, and one allowed edit plus one blocked edit in a real Claude Code session. The [tutorials index](docs/tutorials/README.md) lists it alongside the quick start below.
+The [First governed session](docs/tutorials/first-governed-session.md) tutorial walks you through a disposable Rust task: write a failing test, observe Phronesis reject a prohibited `.unwrap()` implementation, then complete the task with passing tests in Claude Code. The [tutorials index](docs/tutorials/README.md) lists it alongside the quick start below.
 
 ## Community
 

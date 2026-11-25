@@ -1,0 +1,25 @@
+{
+  "rules": [
+    {
+      "id": "tutorial-no-unwrap-in-src",
+      "phase": "pre",
+      "priority": 10,
+      "audit": true,
+      "when": [
+        {
+          "rust_governed_invocation": [
+            "?file",
+            "?fn",
+            "unwrap"
+          ]
+        },
+        {
+          "project_path_under": "src"
+        }
+      ],
+      "then": {
+        "block": "Visit counts can contain malformed input. Handle the parse failure instead of calling .unwrap() in src/. Keep the tests and implement the specified zero fallback."
+      }
+    }
+  ]
+}

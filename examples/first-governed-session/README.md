@@ -1,45 +1,52 @@
-# First governed session — disposable practice project
+# First governed session — disposable examples
 
-This folder is a throwaway mini-project used by the tutorial
-[docs/tutorials/first-governed-session.md](../../../docs/tutorials/first-governed-session.md).
-Copy it into a fresh `mktemp -d` scratch directory, govern the copy, walk
-through one allowed edit and one blocked edit in Claude Code, then delete the
-scratch directory.
+[First governed session](../../../docs/tutorials/first-governed-session.md)
+uses **`tdd-practice/`**, a standalone Rust crate with no dependencies. Start
+from its deliberately incomplete `visits_today` implementation, add the
+published behavioral tests, observe the intended failure, then finish the task
+with a compliant implementation and passing tests. Its one structural rule,
+`tutorial-no-unwrap-in-src`, blocks actual `.unwrap()` invocations under
+`src/`. Comments containing that spelling are allowed. No tests ship inside
+the starter crate: the reader adds them first.
 
-Contents:
+[Verify your installation](../../../docs/tutorials/verify-installation.md)
+uses **`practice/`**, the original language-independent marker fixture:
 
-- `.phronesis/rules.json` — one deterministic teaching rule,
-  `no-tutorial-blocked-marker`: an edit whose new content contains the
-  literal plain-text marker `TUTORIAL-BLOCKED-MARKER` is blocked by the
-  `pre-check` hook, on any file. It is a teaching fixture, not a real coding
-  policy; no language packs, no extras. This exact rule set is what the
-  tutorial's checker asserts.
-- `src/visit.rs` — a small non-compiled playground file to edit.
-- `notes.md` — the edit target; a plain line is allowed, a line with the
-  marker is blocked.
+- `.phronesis/rules.json` blocks proposed content containing
+  `TUTORIAL-BLOCKED-MARKER`, with rule `no-tutorial-blocked-marker`.
+- `notes.md` is the interactive edit target.
+- `src/visit.rs` is an additional non-compiled hook-check fixture.
 
-The sibling script `check_tutorial.py` verifies the whole tutorial flow in
-fresh temporary directories: fixtures, setup commands, hook-level
-allowed/blocked evidence, failure handling for missing executables, malformed
-and stale rule configurations, doctor's read-only behavior, doctor's exact
-finding schema (including `host_trust` and `log_evidence` staying
-`not_observed` even with forged or stale local log records), the disposable
-`--probe` fixture contract, and doctor's response to malformed rules.
+Copy either fixture into a scratch directory before using it. Neither
+requires user-scope MCP registration. TDD build caches live outside the
+scratch copy and are retained after cleanup.
 
-Doctor checks require the installed `phr-mcp` binary to implement the
-`doctor` subcommand. When it does not, those checks **fail by default** — a
-missing required feature is never turned green; pass
-`--allow-missing-doctor` to explicitly downgrade them to SKIP on a legacy
-binary. Feature availability of your own binary is authoritative — check
-`phr-mcp doctor --help`.
+## Executable checks
 
-Run it:
+From the Phronesis checkout, with Python 3, Cargo (Rust 1.90+) and a binary
+supporting `doctor`:
 
 ```sh
-python3 examples/first-governed-session/check_tutorial.py
+python3 examples/first-governed-session/check_tutorial.py --phr-mcp /path/to/phr-mcp -v --keep
 ```
 
-Useful flags: `--phr-mcp /path/to/phr-mcp` to point at a specific binary,
-`--allow-missing-doctor` for the explicit legacy skip, `--keep` to keep the
-temporary directories for inspection, and `--list` to show the individual
-checks. The script uses only the Python 3 standard library.
+The checker uses the Python standard library. The TDD case executes the
+published setup, test source, implementation snippets and Cargo command;
+it checks the specific assertion failure, the structural rule's block,
+unchanged source after denial, allowed recovery, and both unchanged tests
+passing. Comments do not spuriously trigger the structural rule. Cargo runs
+offline with one job and no crate dependencies. Missing Cargo is a failure,
+not a skipped success.
+
+The existing fixture, marker, doctor and negative-configuration checks remain.
+Doctor checks fail by default when the binary lacks the command;
+`--allow-missing-doctor` explicitly permits legacy skips, including the TDD
+case because its setup runs doctor. `--list` shows all cases. `--keep` retains
+the scratch projects and TDD `setup.log`, `red.log`, `blocked-write.log`, and
+`green.log`; Cargo caches are retained separately even without `--keep`.
+
+These are direct hook checks, **not a live agent session**: the checker sends
+proposals to `pre-check` and applies only allowed edits itself. Follow the
+interactive tutorial to observe the host enforce a real tool invocation.
+Neither this checker nor the example rule proves an agent followed TDD; the
+walkthrough explicitly records that chronology.

@@ -24,8 +24,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
-- **First governed session onboarding.** A disposable tutorial demonstrates allowed
-  and blocked edits, explains host trust, and provides executable setup checks.
+- **First governed session onboarding.** A disposable Rust tutorial demonstrates test-first
+  development: a behavioral assertion fails, a structural rule blocks a proposed
+  `.unwrap()` call, and a compliant implementation passes the unchanged tests.
+  Retain the marker-based installation check and detailed setup troubleshooting.
+  Executable checks validate the published red/block/green path; they do not
+  establish a live-host invocation or enforce TDD chronology.
   `phr-mcp doctor` inspects the running binary, project rules, and Claude Code
   hook configuration without repairing or changing the project. Its optional
   isolated adapter probe reports allow/block evidence separately from host
