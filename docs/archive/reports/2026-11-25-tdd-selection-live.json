@@ -1,0 +1,77 @@
+{
+  "tested_commit": "12bef8ff939d7aa71b07a644fac60ac853db59d5",
+  "host": "Claude Code 2.1.330",
+  "model": "claude-sonnet-5",
+  "input_sha256": {
+    "docs/tutorials/first-governed-session.md": "e496ad7dc955fe17fdfa3e63a14aa2122c889dc2fcd0eb24c346ed3b8c7fd3d5",
+    "docs/tutorials/verify-installation.md": "41ca6a09161865adff677857fc464bed4c940bd9e3ad7ce0f8ad132a60cbbbf3",
+    "examples/first-governed-session/tdd-practice/Cargo.toml": "d02d31eaa842a6984fdfd3c1f1372e184bfdde02526e577ff302bbd5f62630f3",
+    "examples/first-governed-session/tdd-practice/src/lib.rs": "d021bb6207beb18e3eb5e79f773978a92380ff1586ed2fd1ecfc9f070cc0d4d8",
+    "examples/first-governed-session/tdd-practice/.phronesis/rules.json": "5f9cb6ff29abf66634b83eee8e66f03a406014465a0d62f1239ffcaa775fa42f"
+  },
+  "binary_sha256": "2d6ebc3b414b4a9fc1a09e2353351531aa1f4c7132a662949f31a7ff6e727cba",
+  "red": {
+    "event": 29,
+    "tool_use_id": "toolu_01K1mnsB2xL424gCwV9Wo76o"
+  },
+  "policy_denial": {
+    "event": 32,
+    "tool_use_id": "toolu_01AzLN8sRdVXWo4kMaPeMToM"
+  },
+  "unchanged_stub_read_event": 36,
+  "green": {
+    "event": 42,
+    "tool_use_id": "toolu_01U5cDevayQFuh4Et9aLX7zm"
+  },
+  "three_test_baseline": {
+    "event": 50,
+    "tool_use_id": "toolu_01CPArS7JmaGdtTnavVALW5a"
+  },
+  "selected_tests": [
+    {
+      "command": null,
+      "evidence": "static_reach",
+      "regions": [
+        "fn:src/lib.rs::visits_today"
+      ],
+      "test": "rust:visit-counter#test:visits::malformed_count_is_zero"
+    },
+    {
+      "command": null,
+      "evidence": "static_reach",
+      "regions": [
+        "fn:src/lib.rs::visits_today"
+      ],
+      "test": "rust:visit-counter#test:visits::parses_valid_count"
+    }
+  ],
+  "selection_event": 86,
+  "exact_runs": [
+    {
+      "event": 99,
+      "tool_use_id": "toolu_01PSc3TGJ3Gae8VM6odW7pb4"
+    },
+    {
+      "event": 101,
+      "tool_use_id": "toolu_01BSQSu8KWAxBKAAEULTj2cT"
+    }
+  ],
+  "tests_unchanged_after_baseline": true,
+  "rules_unchanged": true,
+  "only_unstaged_source_diff": "src/lib.rs",
+  "single_disposable_baseline_commit": true,
+  "transcript_sha256": "1f612c664e8e6582ce8e7dd260bbab7c00613cbf4eccb46870574bd8a9d5d476",
+  "successful_attempt_seconds": 85.31,
+  "successful_attempt_reported_usd": 0.3066367,
+  "all_attempts_reported_usd": 0.6981896,
+  "attempt_count": 3,
+  "adaptation": "Host Bash permission denied output redirection; real selection JSON was observed on stdout and saved with Write. Saved JSON equals actual command output.",
+  "unobserved": [
+    "interactive trust",
+    "hooks UI",
+    "MCP approval/management",
+    "fresh installation",
+    "other hosts",
+    "unfamiliar-human usability"
+  ]
+}
