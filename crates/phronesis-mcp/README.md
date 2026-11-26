@@ -108,6 +108,34 @@ phr-mcp drift             # Guidance/rule gaps (`--source wiki`, memory, claude_
 phr-mcp decision new <s>  # Scaffold an ADR page
 ```
 
+## MCP wire protocol (rmcp 2.1)
+
+`phr-mcp serve` negotiates `initialize` by echoing the client's requested
+`protocolVersion` verbatim for any version rmcp 2.1 knows about, including
+`2024-11-05` and the current `2025-11-25`; an unrecognized request falls
+back to the server default instead. `tools/list` reports 41 tools. Schemas
+generated from Rust parameter types declare JSON Schema draft 2020-12;
+parameterless tools use an empty object schema without a `$schema` key.
+Relative to the pre-2.1 SDK, the
+generator no longer emits a root-level `title` (33 tools) or `description`
+(1 tool) on `inputSchema` — `required`, `properties`, and every type are
+unchanged. `crates/phronesis-mcp/tests/fixtures/mcp-protocol/wire-baseline-tools.json`
+is a committed pre-migration capture; `mcp_protocol_characterization.rs`
+diffs the live `tools/list` against it after stripping only those two keys.
+
+`tools/call` error shapes are exact, not "either is fine":
+
+- Malformed arguments for a known tool (e.g. a required field omitted) come
+  back as a **tool-level error**: ordinary JSON-RPC success envelope,
+  `result.isError: true`, message in `result.content[0].text`.
+- An unknown tool name comes back as a **JSON-RPC protocol error**,
+  `error.code: -32602`, no `result` key at all.
+
+This is rmcp 2.1's `IntoCallToolResult` / `CallToolResult` behavior and is
+the approved contract going forward; test helpers and callers should branch
+on `result.isError` vs. `error`, never treat an empty message from either
+shape as success.
+
 ## Codex setup
 
 `phr-mcp init` merges project hooks into `.codex/hooks.json` and registers the

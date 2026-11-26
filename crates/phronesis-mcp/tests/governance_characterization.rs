@@ -658,13 +658,102 @@ impl McpClient {
         serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()))
     }
 
+    /// Error text for a rejected `tools/call`, regardless of which of the
+    /// two MCP-valid shapes the server used: a JSON-RPC protocol error
+    /// (`error.message`), or a tool-level error result (`isError: true`
+    /// with the message in `result.content[0].text`). rmcp 2.1 surfaces a
+    /// `Parameters<T>` deserialize failure as the latter; the message text
+    /// itself (what these tests assert on) is unchanged either way. A
+    /// response that is neither shape — including a silent success — is a
+    /// test bug or a real regression, so this panics rather than returning
+    /// an empty string that a substring assertion could pass vacuously.
     fn tool_error(&mut self, name: &str, args: Value) -> String {
         let r = self.call("tools/call", json!({"name": name, "arguments": args}));
-        r["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string()
+        interpret_tool_error(name, &r)
     }
+}
+
+/// Free function so the "reject success" behavior can be unit-tested
+/// against a crafted response without spawning a subprocess.
+fn interpret_tool_error(name: &str, r: &Value) -> String {
+    if let Some(message) = r["error"]["message"].as_str() {
+        return message.to_string();
+    }
+    assert_eq!(
+        r["result"]["isError"],
+        Value::Bool(true),
+        "tool {name} call must fail with either a JSON-RPC protocol error \
+         or a tool result carrying isError: true, not a success: {r}"
+    );
+    let text = r["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("tool {name} error result carried no text content: {r}"));
+    assert!(
+        !text.is_empty(),
+        "tool {name} error result carried empty text: {r}"
+    );
+    text.to_string()
+}
+
+#[test]
+fn interpret_tool_error_rejects_a_silent_success_response() {
+    let success = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "isError": false,
+            "content": [{"type": "text", "text": "ok"}]
+        }
+    });
+    let outcome = std::panic::catch_unwind(|| interpret_tool_error("some_tool", &success));
+    assert!(
+        outcome.is_err(),
+        "interpret_tool_error must panic rather than silently accept a success response"
+    );
+}
+
+#[test]
+fn interpret_tool_error_rejects_an_empty_error_text() {
+    let vacuous = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "isError": true,
+            "content": [{"type": "text", "text": ""}]
+        }
+    });
+    let outcome = std::panic::catch_unwind(|| interpret_tool_error("some_tool", &vacuous));
+    assert!(
+        outcome.is_err(),
+        "interpret_tool_error must panic rather than return an empty message that \
+         could make a substring assertion pass vacuously"
+    );
+}
+
+#[test]
+fn interpret_tool_error_accepts_a_protocol_error() {
+    let protocol_error = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {"code": -32602, "message": "boom"}
+    });
+    assert_eq!(interpret_tool_error("some_tool", &protocol_error), "boom");
+}
+
+#[test]
+fn interpret_tool_error_accepts_a_tool_level_error() {
+    let tool_error = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "isError": true,
+            "content": [{"type": "text", "text": "missing field `id`"}]
+        }
+    });
+    assert_eq!(
+        interpret_tool_error("some_tool", &tool_error),
+        "missing field `id`"
+    );
 }
 
 impl Drop for McpClient {
