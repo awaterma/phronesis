@@ -83,7 +83,7 @@ impl EpistemeMcp {
     }
 
     fn ok_text(text: String) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     fn audit_response(body: String, diagnostics: &[String]) -> String {
@@ -1416,7 +1416,7 @@ impl EpistemeMcp {
         } else {
             drift::render_json(&agg)
         };
-        Ok(CallToolResult::success(vec![Content::text(body)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
     }
 
     #[tool(
@@ -1757,7 +1757,7 @@ impl EpistemeMcp {
             &params.because,
         )
         .map_err(|e| Self::err(e.to_string()))?;
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string_pretty(&out).unwrap_or_default(),
         )]))
     }
@@ -1796,19 +1796,12 @@ Confidence reflects only outcomes that were recorded.
 
 Full guide: https://github.com/awaterma/phronesis/blob/main/docs/FOR_AGENTS.md";
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for EpistemeMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation {
-                name: "phr-mcp".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                ..Default::default()
-            },
-            instructions: Some(SERVER_INSTRUCTIONS.into()),
-            ..Default::default()
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("phr-mcp", env!("CARGO_PKG_VERSION")))
+            .with_instructions(SERVER_INSTRUCTIONS)
     }
 }
 
@@ -2338,8 +2331,8 @@ mod clear_consequences_tool_tests {
             },
         ]);
         let result = server.clear_consequences().await.expect("tool response");
-        let text = match &result.content[0].raw {
-            RawContent::Text(text) => text.text.as_str(),
+        let text = match &result.content[0] {
+            ContentBlock::Text(text) => text.text.as_str(),
             other => panic!("unexpected response: {other:?}"),
         };
         assert_eq!(text, "Cleared 2 consequence(s)");

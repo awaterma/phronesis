@@ -1,0 +1,1155 @@
+{
+  "_source": "phronesis-rmcp-migration-20261126/artifacts/wire-baseline.json (pre-migration rmcp 0.17 capture), sessions[\"2024-11-05\"].tools.result.tools, sorted by name",
+  "tools": [
+    {
+      "description": "Acknowledge delivery of a next_interaction emitted capsule; idempotent",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "id": {
+            "description": "User-visible emitted capsule ID. Static capsule files are unaffected.",
+            "type": "string"
+          },
+          "lease_token": {
+            "default": null,
+            "description": "Optional lease token returned by interaction delivery selection.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "EmittedCapsuleIdParam",
+        "type": "object"
+      },
+      "name": "acknowledge_emitted_capsule"
+    },
+    {
+      "description": "Create a sandboxed Rhai fact provider under `.phronesis/predicates/`. Providers receive a normalized read-only `event` and call `emit_fact(predicate, args)` to add project-defined LHS predicates before RETE matching. The script is validated before writing. Existing providers are never replaced unless `replace=true`.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "name": {
+            "description": "Provider filename without the `.rhai` extension.",
+            "type": "string"
+          },
+          "replace": {
+            "default": false,
+            "description": "Explicitly replace an existing provider with the same name.",
+            "type": "boolean"
+          },
+          "script": {
+            "description": "Sandboxed Rhai source using `event` and `emit_fact(predicate, args)`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "script"
+        ],
+        "title": "AddPredicateProviderParams",
+        "type": "object"
+      },
+      "name": "add_predicate_provider"
+    },
+    {
+      "description": "Add a rule to the RETE network. A rule whose id is already loaded is replaced (an update), never duplicated; its phase is kept unless `phase` is given.",
+      "inputSchema": {
+        "$defs": {
+          "ActionInput": {
+            "properties": {
+              "action_type": {
+                "type": "string"
+              },
+              "data": {
+                "default": null,
+                "description": "Optional structured action payload, used by `emit_capsule`."
+              },
+              "params": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "action_type",
+              "params"
+            ],
+            "type": "object"
+          },
+          "ConditionInput": {
+            "properties": {
+              "args": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "predicate": {
+                "type": "string"
+              },
+              "script": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "predicate",
+              "args"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/$defs/ActionInput"
+            },
+            "type": "array"
+          },
+          "conditions": {
+            "items": {
+              "$ref": "#/$defs/ConditionInput"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "phase": {
+            "default": null,
+            "description": "Hook phase this rule applies to: \"pre\" (block before edit) or \"post\"\n(warn after edit). Defaults to \"pre\" when omitted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "priority",
+          "conditions",
+          "actions"
+        ],
+        "title": "AddRuleParams",
+        "type": "object"
+      },
+      "name": "add_rule"
+    },
+    {
+      "description": "Assert a fact into working memory",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "predicate": {
+            "type": "string"
+          },
+          "source": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "predicate",
+          "args"
+        ],
+        "title": "AssertFactParams",
+        "type": "object"
+      },
+      "name": "assert_fact"
+    },
+    {
+      "description": "Audit the project tree for violations of phronesis rules. Unlike the pre-check hook (which only sees diffs), this runs each opted-in rule's predicates against every matching file's current contents and reports per-rule violation counts plus the specific files and lines. Use this to find grandfathered tech debt, prioritize cleanup, or measure debt shrinkage over time. Optional filters: `rule` (single rule id), `path` (subdirectory), `format` (\"json\" default, or \"table\"). Each call writes a snapshot to the action log so `get_debt_trend` can show shrinkage over time.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "format": {
+            "default": null,
+            "description": "`\"json\"` (default) returns the structured AuditReport payload \u2014 best\nfor programmatic use. `\"table\"` returns a human-readable summary.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": null,
+            "description": "Restrict scan to a subdirectory of the project root (e.g. `\"src/parser\"`).\nAbsolute paths are accepted as-is. Defaults to the project root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rule": {
+            "default": null,
+            "description": "Restrict to a single rule id (e.g. `\"no-unwrap-in-src\"`). When set,\nper-file detail with line numbers is included in table output.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "AuditCodebaseParams",
+        "type": "object"
+      },
+      "name": "audit_codebase"
+    },
+    {
+      "description": "Check for active Constraint-type consequences, optionally filtered by predicate",
+      "inputSchema": {
+        "$defs": {
+          "ArgFilter": {
+            "description": "One positional-argument constraint for a fact query: the fact's arg at\n`index` must exactly equal `value`.",
+            "properties": {
+              "index": {
+                "description": "Zero-based position in the fact's `args`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "value": {
+                "description": "Required value at that position (exact match).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "index",
+              "value"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "arg_filters": {
+            "default": null,
+            "description": "Positional argument constraints; all must match. Applied together with\na single `predicate` (ignored when `predicates` is used).",
+            "items": {
+              "$ref": "#/$defs/ArgFilter"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "predicate": {
+            "default": null,
+            "description": "Match facts with this single predicate. Omit (and omit `predicates`)\nto return every fact.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "predicates": {
+            "default": null,
+            "description": "Match facts whose predicate is in this set (membership). Takes\nprecedence over `predicate`/`arg_filters` when given.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "title": "PredicateFilter",
+        "type": "object"
+      },
+      "name": "check_constraints"
+    },
+    {
+      "description": "Clear all accumulated consequences from memory",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "clear_consequences"
+    },
+    {
+      "description": "Retract the current section context fact. Patterns-guide rules will stop firing until `set_section_context` is called again.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ClearSectionContextParams",
+        "type": "object"
+      },
+      "name": "clear_section_context"
+    },
+    {
+      "description": "Submit a markdown file from the project for rules extraction. Parses the file for enforceable patterns and constraints, converts them to phronesis Rules, and loads them into the RETE network. Path must resolve inside the project root.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "file_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "title": "FilePathParam",
+        "type": "object"
+      },
+      "name": "extract_rules"
+    },
+    {
+      "description": "Execute all pending agenda items, returning fired actions and generated consequences",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "fire_rules"
+    },
+    {
+      "description": "Read entries from the action log at .phronesis/log.jsonl. Default returns the most recent 100 entries across both hook and MCP events in {entries: [...]} structured JSON. Filter by `kind` (hook|mcp), `event` name, `since` timestamp, or `only_nonzero_exit: true` to find blocks/warnings.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "event": {
+            "default": null,
+            "description": "Filter by event name (e.g. `\"pre_check\"`, `\"add_rule\"`, `\"fire_rules\"`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "default": null,
+            "description": "Filter by entry kind: `\"hook\"` or `\"mcp\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum number of entries to return (most recent first). Default 100.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "only_nonzero_exit": {
+            "default": false,
+            "description": "When true, return only entries with non-zero `exit` \u2014 useful for\n\"show me what's been blocked recently\".",
+            "type": "boolean"
+          },
+          "since": {
+            "default": null,
+            "description": "Only return entries with `ts >= since` (Unix epoch seconds).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "GetActionLogParams",
+        "type": "object"
+      },
+      "name": "get_action_log"
+    },
+    {
+      "description": "Peek at the current agenda (pending rule activations). Returns {agenda: [...]} as structured JSON.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_agenda"
+    },
+    {
+      "description": "Report whether the current project's derived code graph is missing, fresh, stale, or built with an outdated format. Returns generation, indexed-file and edge counts, drifted files, and rule-binding state as structured JSON.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "get_code_graph_status"
+    },
+    {
+      "description": "Report the confidence band (high/medium/low) and the grounded signals (compile / tests / known-bug) for the open work unit, or `subject` if given. Confidence scoring gates `git commit` on whether the suggested code compiles, its tests pass, and any known-bug test went green. Read-only; reflects `.phronesis/outcomes/`. Returns JSON `{subject, band, signals}`, or `{subject: null}` when no work unit is open. Opt-in per project via `.phronesis/confidence.json`.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "subject": {
+            "default": null,
+            "description": "Report on a specific subject id instead of the open work unit.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "GetConfidenceParams",
+        "type": "object"
+      },
+      "name": "get_confidence"
+    },
+    {
+      "description": "Get accumulated consequences, optionally filtered by kind (event, snapshot, constraint, affordance). Returns {consequences: [...]} as structured JSON.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "kind": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "KindFilter",
+        "type": "object"
+      },
+      "name": "get_consequences"
+    },
+    {
+      "description": "Show debt-over-time by diffing audit snapshots from the action log. Each `audit_codebase` call writes a snapshot; this tool reads them back and reports per-rule hit counts across snapshots plus net change (negative = improvement). Use after running audit_codebase a few times to see whether cleanup is making progress. Optional filters: `last` (default 5), `since` (e.g. \"7d\"), `rule`, `format` (\"json\" default, or \"table\").",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "format": {
+            "default": null,
+            "description": "`\"json\"` (default) or `\"table\"`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last": {
+            "default": null,
+            "description": "Number of most-recent snapshots to include. Default 5. Ignored when `since` is set.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rule": {
+            "default": null,
+            "description": "Restrict to a single rule id.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "default": null,
+            "description": "Time window like `30m`, `24h`, `7d`. Overrides `last` when set.\nSame values as `get_stats --since`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "GetDebtTrendParams",
+        "type": "object"
+      },
+      "name": "get_debt_trend"
+    },
+    {
+      "description": "Detect drift between written guidance and enforced rules across every corpus: root and package-level CLAUDE.md/AGENTS.md imperatives, Claude Code auto-memory entries, ADR decisions under docs/decisions/ (legacy .phronesis/wiki/decisions/ still read), and rules naming code the graph no longer defines. Read-only, heuristic, no LLM call \u2014 output is a triage list, not ground truth. `source` selects one of \"claude_md\", \"memory\", \"wiki\", \"code\", or \"all\" (default). With \"all\" the response is a bounded summary: use a single source plus a higher `limit` for detail. A corpus that does not exist is reported as unavailable rather than failing the call. Optional: `limit` (default 5, max 50), `format` (\"json\" default or \"table\"), `suggest` (default false \u2014 set true to get a draft rule per item, which is large), `memory_dir`, `wiki_dir`.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "format": {
+            "default": null,
+            "description": "\"json\" (default) or \"table\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Max items per source. Default 5, clamped to 50.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "memory_dir": {
+            "default": null,
+            "description": "Override the auto-memory directory.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "default": null,
+            "description": "Which corpus to scan: \"claude_md\", \"memory\", \"wiki\", \"code\", or\n\"all\" (default).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggest": {
+            "default": null,
+            "description": "Include a draft rule per item. Off by default \u2014 a draft is several\nhundred bytes of escaped JSON and would dominate the response.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "wiki_dir": {
+            "default": null,
+            "description": "Override the wiki decisions directory.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "GetDriftParams",
+        "type": "object"
+      },
+      "name": "get_drift"
+    },
+    {
+      "description": "Get a specific fact by its ID",
+      "inputSchema": {
+        "$defs": {
+          "FactId": {
+            "description": "Identifier for a fact (a [`crate::wme::WorkingMemoryElement`]).\n\nFact IDs are typically host-minted strings carried with the fact through\nthe engine and surfaced in [`crate::Provenance::RuleFiring::bound_facts`]\nwhen an actor wants to trace 'why did this rule fire?' back to its\ninputs. The newtype keeps fact IDs distinct from rule IDs and state IDs\nat the type level.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "fact_id": {
+            "$ref": "#/$defs/FactId"
+          }
+        },
+        "required": [
+          "fact_id"
+        ],
+        "title": "FactIdParam",
+        "type": "object"
+      },
+      "name": "get_fact"
+    },
+    {
+      "description": "Return the journey_* facts that would be asserted right now against `.phronesis/journey/events.jsonl` and the loaded rules \u2014 the agent's trajectory at a glance. Optionally pass `explain_rule` to filter to a single rule's referenced facts. Mirrors the `phr-mcp journey` CLI; reads the journey journal + journey.json + rules.json. JSON array of `{predicate, selector, window, extra, rules}` rows. Pass `include_lifecycle: true` to get `{\"facts\": [...], \"lifecycle\": [...]}` instead, adding the recent lifecycle records (sub-agent start/stop, prompts with `fresh`/`mid_turn`/`correction` mode, interrupts, turn stops, commits); prompt text is never included.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "explain_rule": {
+            "default": null,
+            "description": "Optional rule id; when set, only return facts that specific rule\nreferences. Mirrors the `phr-mcp journey --explain` CLI flag.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "include_lifecycle": {
+            "default": false,
+            "description": "When true, return `{\"facts\": [...], \"lifecycle\": [...]}` \u2014 the derived\nfacts plus the recent lifecycle records (sub-agent start/stop, prompts\nwith their mode, interrupts, turn stops, commits). Default `false`\nreturns the bare array of fact rows, unchanged from earlier versions.",
+            "type": "boolean"
+          }
+        },
+        "title": "GetJourneyParams",
+        "type": "object"
+      },
+      "name": "get_journey"
+    },
+    {
+      "description": "Read one project Rhai predicate provider by name",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PredicateProviderNameParam",
+        "type": "object"
+      },
+      "name": "get_predicate_provider"
+    },
+    {
+      "description": "Get a specific rule by its ID",
+      "inputSchema": {
+        "$defs": {
+          "RuleId": {
+            "description": "Identifier for a rule. Distinct from [`StateId`] at the type level.\n\nA `RuleId` is the stable human-readable string a rule author gives the\nrule (e.g. `\"enforce-no-unwrap-in-src\"`). It moves with consequences\nin the [`crate::Provenance::RuleFiring`] variant and is what audit logs,\nhook decisions, and trend reports group by.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "rule_id": {
+            "$ref": "#/$defs/RuleId"
+          }
+        },
+        "required": [
+          "rule_id"
+        ],
+        "title": "RuleIdParam",
+        "type": "object"
+      },
+      "name": "get_rule"
+    },
+    {
+      "description": "Aggregate rule-firing statistics from the action log (per-rule blocked/warned counts, last-fired timestamp, window label). Mirrors the `phr-mcp stats` CLI. Optional filters: `since` (e.g. \"7d\"), `rule` (single rule id), `format` (\"json\" default, or \"table\").",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "format": {
+            "default": null,
+            "description": "Rendering format. `\"json\"` (default) returns the structured Stats\npayload \u2014 best for programmatic callers. `\"table\"` returns a\nhuman-readable terminal table.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rule": {
+            "default": null,
+            "description": "When set, restrict aggregation to a single rule id. Same semantics\nas `phr-mcp stats --rule`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "default": null,
+            "description": "Time window like `30m`, `24h`, `7d`, `2w`. Omit (or pass an\nunrecognized value) for an all-time aggregate. Matches the\n`phr-mcp stats --since` CLI flag.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "GetStatsParams",
+        "type": "object"
+      },
+      "name": "get_stats"
+    },
+    {
+      "description": "List rule-emitted durable context capsules",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_emitted_capsules"
+    },
+    {
+      "description": "List or query facts in working memory. No params \u2192 all facts. `predicate` \u2192 facts with that predicate, optionally narrowed by `arg_filters` (positional arg = value constraints). `predicates` \u2192 facts whose predicate is in the set. Results are sorted by fact id and returned as {facts: [...]} structured JSON.",
+      "inputSchema": {
+        "$defs": {
+          "ArgFilter": {
+            "description": "One positional-argument constraint for a fact query: the fact's arg at\n`index` must exactly equal `value`.",
+            "properties": {
+              "index": {
+                "description": "Zero-based position in the fact's `args`.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "value": {
+                "description": "Required value at that position (exact match).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "index",
+              "value"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "arg_filters": {
+            "default": null,
+            "description": "Positional argument constraints; all must match. Applied together with\na single `predicate` (ignored when `predicates` is used).",
+            "items": {
+              "$ref": "#/$defs/ArgFilter"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "predicate": {
+            "default": null,
+            "description": "Match facts with this single predicate. Omit (and omit `predicates`)\nto return every fact.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "predicates": {
+            "default": null,
+            "description": "Match facts whose predicate is in this set (membership). Takes\nprecedence over `predicate`/`arg_filters` when given.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "title": "PredicateFilter",
+        "type": "object"
+      },
+      "name": "list_facts"
+    },
+    {
+      "description": "List built-in and project-installed starter language packs for the current project: id, version, origin (built_in/installed), location, extensions, grammar, declared capabilities, per-capability activation status, and validation status/diagnostics. A damaged or removed pack stays visible with diagnostics rather than being silently dropped. Refreshed on every call; never executes a pack's query, script, or fixture, installs anything, or rebuilds the graph.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_language_packs"
+    },
+    {
+      "description": "List project Rhai predicate providers in deterministic load order",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ListPredicateProvidersParams",
+        "type": "object"
+      },
+      "name": "list_predicate_providers"
+    },
+    {
+      "description": "List all rules currently loaded in the RETE network. Returns {rules: [...]} as structured JSON.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_rules"
+    },
+    {
+      "description": "Hydrate the in-memory network from .phronesis/rules.json. Adds each rule (preserving its phase) and skips rules whose ID already exists. After a load error, a repaired file replaces the loaded rules wholesale (with autopersist on; without it the load stays additive, keeping rules added in memory).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "LoadRulesFileParams",
+        "type": "object"
+      },
+      "name": "load_rules_file"
+    },
+    {
+      "description": "Query the structural code graph at `.phronesis/graph.jsonl` \u2014 a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `test_imports` (a `use` under `#[cfg(test)]`; excluded from `in_cycle`), `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. A bare name (no `*` or `?`) also matches a suffix of a fully qualified ID that starts right after a `:` \u2014 a `::` separator or a prefix such as `rust:` \u2014 so `fire_all_consequences`, `ReteNetwork::fire_all_consequences`, and `phronesis::wme` all resolve. Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` or pass `\"overview\"` to inspect vocabulary and edge distribution. When queries return 0 results, structured diagnostics provide triage and format suggestions. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "args": {
+            "default": null,
+            "description": "Positional argument constraints, in order. Use `\"*\"` to leave a\nposition unconstrained \u2014 e.g. `[\"*\", \"phronesis::wme\"]` on `imports`\nasks \"what depends on phronesis::wme?\". Embedded `*` / `?` are globs;\na bare name with neither also matches a suffix of a fully qualified ID\nthat starts right after a `:` \u2014 a `::` separator or a prefix such as\n`rust:` (`fire_all_consequences`, `ReteNetwork::fire_all_consequences`).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum rows returned. Defaults to 50; `0` means no limit. The\nresponse always reports the unlimited total so truncation is visible.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "relation": {
+            "default": null,
+            "description": "Relation to match, e.g. `tested_by`, `defines_fn`, `imports`,\n`no_direct_test`, `in_cycle`, `calls_api`, `file_type`,\n`declares_module`.\nOmit to list the available relations and their edge counts.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "QueryCodeGraphParams",
+        "type": "object"
+      },
+      "name": "query_code_graph"
+    },
+    {
+      "description": "Explain the indexed Rust ownership evidence for a function, grouped by function and site. Returns, per function: every observed site (clone / filter / await / mutation / synchronous lock) with its source location and the literal operation observed; the derived structural relationships (`filter_before_clone`, `clone_before_await`, `read_before_mutation`, `lock_scope_ends_before_await`) each naming the sites that support it; the evidence level and provider behind every site; type-inference and MIR availability including `unavailable`, `partial`, `failed`, and `stale`; and the explicit limit of each claim. `function` is a canonical Rust function ID, a glob (`*` / `?`), or a bare name such as `Scheduler::acquire`, matching `query_code_graph` semantics. This is evidence, not a verdict: an empty result means no indexed ownership evidence matched, never that the code has no ownership concern. Opt-in per project via `[ownership.rust]` in `.phronesis/graph.toml`; the project root is server-controlled and this tool takes no filesystem path.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "function": {
+            "description": "Canonical Rust function ID, e.g.\n`rust:mycrate::llm::scheduler::Scheduler::acquire`, or a glob over\none (`rust:mycrate::llm::*`), or a bare name such as\n`Scheduler::acquire`. Same matching as `query_code_graph`.",
+            "type": "string"
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum functions returned. Defaults to 20; `0` means no limit. The\nresponse always reports the unlimited total so truncation is visible.\n\nThere is deliberately no path field: the project root is\nserver-controlled, as it is for every other graph tool.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "function"
+        ],
+        "title": "OwnershipEvidenceParams",
+        "type": "object"
+      },
+      "name": "query_ownership_evidence"
+    },
+    {
+      "description": "Rebuild the current project's derived code graph from tracked source (Rust, Python, TypeScript/JavaScript, Swift, Java, Lua), reconcile rule bindings, and return the resulting fresh status as structured JSON. The project root is server-controlled; this tool does not accept a filesystem path.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "rebuild_code_graph"
+    },
+    {
+      "description": "Remove one project Rhai predicate provider by name",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PredicateProviderNameParam",
+        "type": "object"
+      },
+      "name": "remove_predicate_provider"
+    },
+    {
+      "description": "Remove a rule from the RETE network by its ID",
+      "inputSchema": {
+        "$defs": {
+          "RuleId": {
+            "description": "Identifier for a rule. Distinct from [`StateId`] at the type level.\n\nA `RuleId` is the stable human-readable string a rule author gives the\nrule (e.g. `\"enforce-no-unwrap-in-src\"`). It moves with consequences\nin the [`crate::Provenance::RuleFiring`] variant and is what audit logs,\nhook decisions, and trend reports group by.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "rule_id": {
+            "$ref": "#/$defs/RuleId"
+          }
+        },
+        "required": [
+          "rule_id"
+        ],
+        "title": "RuleIdParam",
+        "type": "object"
+      },
+      "name": "remove_rule"
+    },
+    {
+      "description": "Retract a rule-emitted durable context capsule; idempotent",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "id": {
+            "description": "User-visible emitted capsule ID. Static capsule files are unaffected.",
+            "type": "string"
+          },
+          "lease_token": {
+            "default": null,
+            "description": "Optional lease token returned by interaction delivery selection.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "EmittedCapsuleIdParam",
+        "type": "object"
+      },
+      "name": "retract_emitted_capsule"
+    },
+    {
+      "description": "Retract a fact from working memory",
+      "inputSchema": {
+        "$defs": {
+          "FactId": {
+            "description": "Identifier for a fact (a [`crate::wme::WorkingMemoryElement`]).\n\nFact IDs are typically host-minted strings carried with the fact through\nthe engine and surfaced in [`crate::Provenance::RuleFiring::bound_facts`]\nwhen an actor wants to trace 'why did this rule fire?' back to its\ninputs. The newtype keeps fact IDs distinct from rule IDs and state IDs\nat the type level.",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "fact_id": {
+            "$ref": "#/$defs/FactId"
+          }
+        },
+        "required": [
+          "fact_id"
+        ],
+        "title": "FactIdParam",
+        "type": "object"
+      },
+      "name": "retract_fact"
+    },
+    {
+      "description": "Persist the current in-memory rules to .phronesis/rules.json. By default merges with the existing file (rules with matching IDs are updated; new rules append; disk-only rules are preserved). Use dry_run to preview without writing.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "description": "When true, return the diff/summary without writing.",
+            "type": "boolean"
+          },
+          "merge": {
+            "default": true,
+            "description": "When true (default), merges in-memory rules with the existing on-disk\nrules file by ID. When false, the existing file is replaced.",
+            "type": "boolean"
+          },
+          "phase": {
+            "default": null,
+            "description": "Default phase to assign to in-memory rules that have no recorded phase.\nWhen omitted, defaults to \"pre\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "SaveRulesParams",
+        "type": "object"
+      },
+      "name": "save_rules"
+    },
+    {
+      "description": "Select the tests relevant to the working tree's uncommitted changes \u2014 the same selection as `phr-mcp coverage select --json`. Returns the changed function and branch regions and, per test, its evidence kind: `coverage_observation` (imported per-test coverage hit a changed region), `coverage_observation_stale` (a hit imported at another revision), or `static_reach` (a code-graph edge reaches a changed function, transitively \u2014 broad for central functions). `static_note` explains when graph-based selection was omitted (e.g. the graph is stale: call `rebuild_code_graph`), `coverage_note` when imported coverage cannot be trusted, and `no_coverage_semantics` lists edited files that are evaluated rather than executed. `limit` caps `tests` (default 100, 0 = all); `total_tests` is always the full count. The project root is server-controlled; this tool takes no filesystem path.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "change": {
+            "default": null,
+            "description": "Change id to label the selection with (the CLI's `--change`).\nDefaults to `head:<short-sha>`. The changed regions always come from\nthe working tree's uncommitted diff against `HEAD`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum tests returned. Defaults to 100; `0` means no limit. The\nresponse always reports the unlimited total so truncation is visible.\n\nThere is deliberately no path field: the project root is\nserver-controlled, as it is for every other graph tool.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "SelectTestsParams",
+        "type": "object"
+      },
+      "name": "select_tests"
+    },
+    {
+      "description": "Transition a property's status (SPEC-property-ontology.md \u00a74): the promotion act. `because` is required \u2014 every transition must name its reason. The transition is journaled as kind:mcp in log.jsonl with the property, old status, new status, and the reason. Statuses: observed | candidate | corroborated | accepted | verified | rejected | superseded. This is the ONLY way to change a property's status \u2014 rules report eligibility, never promote.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for `set_property_status` (SPEC-property-ontology.md \u00a74):\nthe promotion act. `because` is required \u2014 every transition must name\nits reason (the audit trail is the discipline, not a state machine).",
+        "properties": {
+          "because": {
+            "description": "The human reason for the transition. Required: promotion is an explicit,\nrecorded act (sketch \u00a717: \"observed \u2260 intended\").",
+            "type": "string"
+          },
+          "new_status": {
+            "description": "The new status: observed | candidate | corroborated | accepted | verified | rejected | superseded.",
+            "type": "string"
+          },
+          "property_id": {
+            "description": "The property id to transition.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "property_id",
+          "new_status",
+          "because"
+        ],
+        "title": "SetPropertyStatusParams",
+        "type": "object"
+      },
+      "name": "set_property_status"
+    },
+    {
+      "description": "Declare which section of a patterns-guide document the agent is currently working in. Retracts any previous section-context fact and asserts `markdown_rule(file, section)`. Patterns-guide rules with matching conditions will fire on the next `fire_rules`.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "file": {
+            "description": "The source file the section belongs to. Must match the `args[0]` of\nthe extracted rules' `markdown_rule` conditions (typically a path\nlike \"docs/RUST-PATTERNS-GUIDE.md\").",
+            "type": "string"
+          },
+          "section": {
+            "description": "Section name as it appeared in the markdown (e.g. \"Error Handling\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "section"
+        ],
+        "title": "SetSectionContextParams",
+        "type": "object"
+      },
+      "name": "set_section_context"
+    },
+    {
+      "description": "Declare a confidence work unit ('subject') \u2014 e.g. a cross-language translation or a discrete suggestion \u2014 and return its current confidence report. Sets the open subject so subsequent build/test runs accrue grounded signals to it, and records a `unit_start` lifecycle event naming the work item. Optionally pass `spec` (a repo-relative path to the spec this work is built to; it must exist) or `bug_id` (an id from `.phronesis/bugs.json`, which names the unit `bug-<id>` and carries the bug's test name; an unknown id is an error). Returns JSON `{subject, unit_id, summary, spec, band, signals}`; `subject` is the id actually opened, which `bug_id` may rename. Confidence is opt-in per project via `.phronesis/confidence.json`.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "bug_id": {
+            "default": null,
+            "description": "Optional id from `.phronesis/bugs.json`. When given, the work unit is\nnamed `bug-<id>` (overriding `subject`) and carries the registry's\ncargo test name, plus its spec when the entry has one. An id that is\nnot in the registry is an error.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spec": {
+            "default": null,
+            "description": "Optional repo-relative path to the spec this work item is built to\n(e.g. `\"docs/specs/SPEC-auth.md\"`). The file must exist. Recorded on\nthe `unit_start` lifecycle event so reports can answer \"which spec was\nthis built to?\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject": {
+            "description": "The work-unit id to open/declare (e.g. a translation: `\"xlate-7\"`).\nSubsequent build/test runs accrue confidence signals to it.",
+            "type": "string"
+          },
+          "summary": {
+            "default": null,
+            "description": "Optional human-readable summary of the suggestion.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "subject"
+        ],
+        "title": "SubmitSuggestionParams",
+        "type": "object"
+      },
+      "name": "submit_suggestion"
+    },
+    {
+      "description": "Evaluate a Rhai predicate-provider script against a supplied normalized event without writing it. Returns the facts it would emit; use this before add_predicate_provider.",
+      "inputSchema": {
+        "$defs": {
+          "PredicateProviderEventInput": {
+            "properties": {
+              "command": {
+                "default": "",
+                "type": "string"
+              },
+              "file_path": {
+                "default": "",
+                "type": "string"
+              },
+              "files": {
+                "default": [],
+                "description": "All project-relative paths in a batch operation. Empty for per-file events.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "new_content": {
+                "default": "",
+                "type": "string"
+              },
+              "old_content": {
+                "default": "",
+                "type": "string"
+              },
+              "output": {
+                "default": "",
+                "type": "string"
+              },
+              "phase": {
+                "default": "",
+                "type": "string"
+              },
+              "tool_name": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "event": {
+            "$ref": "#/$defs/PredicateProviderEventInput",
+            "default": {
+              "command": "",
+              "file_path": "",
+              "files": [],
+              "new_content": "",
+              "old_content": "",
+              "output": "",
+              "phase": "",
+              "tool_name": ""
+            }
+          },
+          "script": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "script"
+        ],
+        "title": "TestPredicateProviderParams",
+        "type": "object"
+      },
+      "name": "test_predicate_provider"
+    }
+  ]
+}
