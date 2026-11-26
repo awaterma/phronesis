@@ -60,3 +60,8 @@ path = "examples/rule_driven_lookup.rs"
 [[bench]]
 name = "rete_hot_path"
 harness = false
+
+[[bench]]
+name = "selective_drain"
+harness = false
+required-features = ["embedding-host"]

@@ -6,6 +6,10 @@ Phronesis (φρόνησις) is a domain-neutral RETE rules engine designed to p
 
 Rules in Phronesis live on disk, are evaluated by lightweight hooks at the moment of action, and fire the same in token nine hundred thousand as they do in token eight hundred.
 
+## First governed session
+
+The [First governed session](docs/tutorials/first-governed-session.md) tutorial walks you through a disposable Rust task: write a failing test, observe Phronesis reject a prohibited `.unwrap()` implementation, then complete the task with passing tests in Claude Code. The [tutorials index](docs/tutorials/README.md) lists it alongside the quick start below.
+
 ## Community
 
 Using Phronesis, trying it out, or deciding whether it fits?

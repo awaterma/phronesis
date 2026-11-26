@@ -48,6 +48,8 @@ cargo run -- graph query [relation] [args...]  # Query the graph by relation and
 cargo run -- graph query tested_by fire_all_consequences  # Example: tests covering a function, by bare name (a literal arg also matches a trailing `::` segment of a qualified ID)
 cargo run -- graph status         # Does the code graph still match the working tree?
 cargo run -- graph ownership <fn> # Grouped Rust ownership evidence for a function (or glob): sites, spans, relationships, evidence level/provider, type & MIR availability, and the limit of each claim. Evidence with stated limits — never proof. Opt-in via `[ownership.rust]` in `.phronesis/graph.toml`.
+cargo run -- doctor --host claude # Read-only setup diagnostics; host trust remains a separate observation
+cargo run -- doctor --probe --json # Isolated adapter allow/block evidence, not a real-host verdict
 cargo run -- state                # Classify authored/cache/history/sensitive .phronesis state
 cargo run -- clean --cache        # Remove only rebuildable graph cache files
 cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shape to the v2 shape
@@ -588,6 +590,16 @@ phr-mcp init --hooks-only
 
 Writes `.claude/settings.local.json`, `.mcp.json`, and `.gemini/settings.json`
 only. `.phronesis/rules.json` and `.gitignore` are left exactly as they were.
+
+### Diagnosing your first session
+
+`phr-mcp doctor --host claude --path /path/to/project` inspects setup without
+repairing it. Add `--json` for structured findings or `--probe` to exercise
+the current executable against temporary allow/block fixtures. Configuration,
+probe evidence, and host observation are separate: a passing probe cannot
+confirm that Claude Code trusts or invokes the project hooks. Follow the
+[first governed session tutorial](../../docs/tutorials/first-governed-session.md)
+for an actual host walkthrough and troubleshooting.
 
 ### Looking at activity
 
@@ -1153,3 +1165,7 @@ beside static `nudge:<id>` items. SessionStart never renders emitted capsules.
 For `next_interaction`, selection leases rather than consumes the record;
 acknowledgement removes it, and an unacknowledged five-minute lease retries.
 Use `phr-mcp context list|acknowledge|retract` or the corresponding MCP tools.
+
+Doctor currently inspects the generated Claude `settings.local.json` only.
+Shared-only settings are `not_observed`; user and managed settings are not
+merged. Inspect the host's `/hooks` view to verify its effective configuration.

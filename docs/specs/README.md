@@ -27,6 +27,7 @@ Statuses are reconciled by code inspection (module + test paths) and, for releas
 | [SPEC-downstream-config-lifecycle-rules](SPEC-downstream-config-lifecycle-rules.md) | needs evidence (proposed) | — |
 | [SPEC-drift-consolidation](SPEC-drift-consolidation.md) | shipped | consolidated registry: 0.25.1 |
 | [SPEC-dynamic-language-boundaries](SPEC-dynamic-language-boundaries.md) | partial (imports edges; wider design unverified) | — |
+| [SPEC-embedding-host-follow-ups](SPEC-embedding-host-follow-ups.md) | needs evidence (proposed; deferred requests 3–5) | — |
 | [SPEC-extensible-predicates](SPEC-extensible-predicates.md) | shipped | 0.22.0 |
 | [SPEC-extract-rules-defaults](SPEC-extract-rules-defaults.md) | shipped | module since 0.9.1; refinement version unverified |
 | [SPEC-fact-provenance](SPEC-fact-provenance.md) | shipped | since 0.9.1 (initial release) |

@@ -4,7 +4,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn run_hook(subcommand: &str, payload: &str) -> (i32, String) {
-    run_hook_in(subcommand, payload, None)
+    // Tests without rules must not inherit the checkout's authored policy.
+    let root = tempfile::tempdir().expect("isolated unconfigured project");
+    run_hook_in(subcommand, payload, Some(root.path()))
 }
 
 fn run_hook_in(subcommand: &str, payload: &str, cwd: Option<&Path>) -> (i32, String) {

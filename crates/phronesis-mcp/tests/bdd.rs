@@ -58,9 +58,13 @@ fn run_hook(subcommand: &str, payload: &str, cwd: Option<&str>) -> (i32, String)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
+    // A scenario without a rules fixture needs an unconfigured project,
+    // not the checkout's local policy inherited through the process cwd.
+    let empty_project = tempfile::tempdir().expect("isolated unconfigured project");
+    cmd.current_dir(
+        cwd.map(std::path::Path::new)
+            .unwrap_or(empty_project.path()),
+    );
     let mut child = cmd.spawn().expect("failed to spawn hook");
     child
         .stdin

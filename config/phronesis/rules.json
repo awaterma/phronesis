@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "id": "warn-tdd-before-source-change",
+      "phase": "pre",
+      "priority": 40,
+      "when": [
+        {
+          "file_path_matches": "src"
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ],
+      "then": {
+        "warn": "Use TDD for features and bug fixes: write a focused behavioral/regression test first, run it and observe the intended failure, make the smallest implementation change to pass, then refactor with tests green. Preserve red/green evidence; tests added afterward are not test-first development. This reminder does not verify test chronology."
+      }
+    }
+  ]
+}

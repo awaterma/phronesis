@@ -25,6 +25,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Executable first-session tutorial
+        run: python3 examples/first-governed-session/check_tutorial.py --phr-mcp "$PWD/target/debug/phr-mcp" -v
       # Agent state is local-only (`/.phronesis/` is ignored), so a clean
       # clone must provision explicitly before the audit gate: reviewed
       # presets from config/phronesis/, then starter rules from the shipped

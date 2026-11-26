@@ -10,6 +10,7 @@ pub mod context;
 pub mod coverage;
 pub mod decision_store;
 pub mod diff_extract;
+pub mod doctor;
 pub mod drift;
 pub mod durable_migrate;
 pub(crate) mod fact_id;

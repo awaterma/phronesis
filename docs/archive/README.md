@@ -10,6 +10,14 @@ Historical plans, reviews, reports, and superseded designs, preserved intact. Ev
 | [reviews/](reviews/) | PR and spec reviews |
 | [research/](research/) | Point-in-time research measurements |
 
+Recent validation records:
+
+- [Current TDD tutorial: live host and selective-test acceptance](reports/2026-11-25-tdd-selection-live.md) — current-input hashes, real selected-test runs, retained harness restrictions, and exact scope.
+
+- [Governed TDD walkthrough and selective tests](reports/2026-11-25-tdd-walkthrough.md) — real headless host acceptance, narrow fixes, executable graph-selection evidence, and remaining gaps.
+
+- [First governed session and embedding-host APIs](reports/2026-11-22-first-governed-session.md) — independent walkthrough, host evidence, checks, and explicit gaps.
+
 Pointers to still-relevant current material:
 
 - Language-pack designs → current reference: [`docs/reference/LANGUAGE-PACKS.md`](../reference/LANGUAGE-PACKS.md)
