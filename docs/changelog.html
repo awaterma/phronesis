@@ -2,7 +2,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="utf-8" />
-  <meta name="generator" content="pandoc 3.10" />
+  <meta name="generator" content="pandoc 3.14" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
   <title>Phronesis — Changelog</title>
   <style>
@@ -251,7 +251,7 @@
   <a href="./docs/">Docs</a>
 </nav>
 <header>
-  <div class="web-kicker">Phronesis documentation · v0.41.3</div>
+  <div class="web-kicker">Phronesis documentation · v0.42.1</div>
 </header>
 <header id="title-block-header">
 <h1 class="title">Phronesis — Changelog</h1>
@@ -261,6 +261,8 @@
 <li><a href="#changelog" id="toc-changelog">Changelog</a>
 <ul>
 <li><a href="#unreleased" id="toc-unreleased">[Unreleased]</a></li>
+<li><a href="#release-notes-section">[0.42.1]</a></li>
+<li><a href="#release-notes-section-1">[0.42.0] - 2026-11-26</a></li>
 <li><a href="#section" id="toc-section">[0.41.1]</a></li>
 <li><a href="#section-1" id="toc-section-1">[0.41.0] -
 2026-11-03</a></li>
@@ -348,6 +350,96 @@ follows <a href="https://keepachangelog.com/en/1.1.0/">Keep a
 Changelog</a>. This project is pre-1.0: while <code>0.x</code>, MINOR
 versions may carry breaking changes.</p>
 <h2 id="unreleased">[Unreleased]</h2>
+<h2 id="release-notes-section">[0.42.1]</h2>
+<p>All five workspace crates advance from 0.42.0 to 0.42.1 together.
+This release updates the MCP SDK and hardens protocol and performance
+regression coverage.</p>
+<h3 id="release-notes-changed">Changed</h3>
+<ul>
+<li><strong>MCP SDK migration (<a
+href="https://github.com/awaterma/phronesis/pull/175">#175</a>).</strong>
+Upgrade <code>rmcp</code> from 0.17.0 to 2.1.0 and adapt tool routing,
+server metadata, and text content to its updated Rust API. The server
+retains its 41 tools, instructions, and tools capability.</li>
+<li><strong>MCP client compatibility.</strong> Invalid arguments for a
+known tool now return a successful JSON-RPC envelope containing
+<code>result.isError: true</code> and an explanatory text result.
+Unknown tool names continue to return JSON-RPC error
+<code>-32602</code>. Clients must inspect both protocol errors and
+tool-level errors. Supported requested protocol versions are echoed
+during initialization; unsupported versions fall back to the SDK
+default.</li>
+<li><strong>Tool schema metadata.</strong> Generated input schemas no
+longer include the previous root-level <code>title</code> (33 tools) or
+<code>description</code> (one tool). Tool names, descriptions, parameter
+properties, required fields, and types are preserved. Typed schemas
+declare JSON Schema draft 2020-12; parameterless tools retain their
+empty object schemas.</li>
+</ul>
+<h3 id="release-notes-tests-and-maintenance">Tests and maintenance</h3>
+<ul>
+<li>Add subprocess wire-contract tests for initialization, protocol
+negotiation, successful calls, exact error envelopes, and the complete
+tool inventory against a committed pre-migration baseline. Timeout
+checks exercise child process cleanup and reject responses received
+after the deadline. Update governance characterization helpers for the
+new SDK error contract.</li>
+<li><strong>Performance smoke checks (<a
+href="https://github.com/awaterma/phronesis/pull/180">#180</a>).</strong>
+Warm up once, then measure five fresh fixtures and check their median
+against the existing budgets. Up to two isolated scheduling spikes are
+tolerated; a slow majority still fails. Deterministic policy tests cover
+both outcomes and budget boundaries; this change does not claim a
+runtime speedup.</li>
+<li>Document the MCP wire contract and refresh the generated rule
+catalogue’s version stamp to v0.42.1.</li>
+</ul>
+<h2 id="release-notes-section-1">[0.42.0] - 2026-11-26</h2>
+<h3 id="release-notes-embedding-hosts">Embedding hosts</h3>
+<ul>
+<li>Add <code>execute_agenda_items_for_fact</code> and
+<code>ExecutedActivation</code> under <code>embedding-host</code>,
+preserving normal firing order and untouched pending work. The
+<code>_with</code> callback variant applies host effects between
+activations, includes newly created matches for the selected fact, and
+refreshes fire-time guards.</li>
+<li>Add <code>begin_ordered_batch</code> for unbatched-equivalent
+activation order. It retains incremental assertion order and coalesces
+redundant retraction scans, allows same-mode nesting, and rejects mixed
+modes. Rule edits, failed assertions and guard-false drains invalidate
+scan reuse. The existing fast batch remains available.</li>
+<li>Reuse a single guard snapshot during collect-only drains while
+retaining fresh snapshots after host callbacks. When the
+highest-priority agenda item matches the selected fact, use the native
+heap pop to avoid a full selection scan.</li>
+<li>Record atomic fact deltas, test fault injection, and mutation
+observers as proposed follow-ups, without adding those APIs.</li>
+</ul>
+<h3 id="release-notes-added">Added</h3>
+<ul>
+<li><strong>First governed session onboarding.</strong> A disposable
+Rust tutorial demonstrates test-first development: a behavioral
+assertion fails, a structural rule blocks a proposed
+<code>.unwrap()</code> call, and a compliant implementation passes the
+unchanged tests. An optional refactor uses the code graph to select
+relevant tests, excludes an unrelated control test, and runs the
+selected Cargo tests individually. Retain the marker-based installation
+check and detailed setup troubleshooting. Executable checks validate the
+published red/block/green path; they do not establish a live-host
+invocation or enforce TDD chronology. <code>phr-mcp doctor</code>
+inspects the running binary, project rules, and Claude Code hook
+configuration without repairing or changing the project. Its optional
+isolated adapter probe reports allow/block evidence separately from host
+observation; a successful probe does not establish that host hooks
+ran.</li>
+</ul>
+<h3 id="release-notes-development-guidance">Development guidance</h3>
+<ul>
+<li>Add reviewed TDD guidance, a source-edit warning rule, and a durable
+context capsule for features and bug fixes. These reminders do not prove
+test-first chronology; retrospective regression checks must be
+identified as such.</li>
+</ul>
 <h2 id="section">[0.41.1]</h2>
 <p>This patch release fixes incremental RETE matching and Rust
 unsafe-code auditing. It adds no new public APIs or rule formats. All
@@ -3318,6 +3410,6 @@ and <code>confidence</code> packs. PATCH for 0.13.x.</li>
 <p>Pre-0.11 history (0.10.0 and earlier) is recorded in the git log and
 <code>docs/specs/</code>. Notably, 0.10.0 added wiki-drift, the
 block-pattern rules, and the v2 rule schema.</p>
-<footer class="web-footer">Phronesis · durable governance for LLM-assisted work · v0.41.3</footer>
+<footer class="web-footer">Phronesis · durable governance for LLM-assisted work · v0.42.1</footer>
 </body>
 </html>

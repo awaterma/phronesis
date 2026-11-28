@@ -6,6 +6,46 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.42.1]
+
+All five workspace crates advance from 0.42.0 to 0.42.1 together. This release
+updates the MCP SDK and hardens protocol and performance regression coverage.
+
+### Changed
+
+- **MCP SDK migration ([#175](https://github.com/awaterma/phronesis/pull/175)).**
+  Upgrade `rmcp` from 0.17.0 to 2.1.0 and adapt tool routing, server metadata,
+  and text content to its updated Rust API. The server retains its 41 tools,
+  instructions, and tools capability.
+- **MCP client compatibility.** Invalid arguments for a known tool now return
+  a successful JSON-RPC envelope containing `result.isError: true` and an
+  explanatory text result. Unknown tool names continue to return JSON-RPC
+  error `-32602`. Clients must inspect both protocol errors and tool-level
+  errors. Supported requested protocol versions are echoed during initialization;
+  unsupported versions fall back to the SDK default.
+- **Tool schema metadata.** Generated input schemas no longer include the
+  previous root-level `title` (33 tools) or `description` (one tool). Tool names,
+  descriptions, parameter properties, required fields, and types are preserved.
+  Typed schemas declare JSON Schema draft 2020-12; parameterless tools retain
+  their empty object schemas.
+
+### Tests and maintenance
+
+- Add subprocess wire-contract tests for initialization, protocol negotiation,
+  successful calls, exact error envelopes, and the complete tool inventory
+  against a committed pre-migration baseline. Timeout checks exercise child
+  process cleanup and reject responses received after the deadline. Update
+  governance characterization helpers for the new SDK error contract.
+- **Performance smoke checks ([#180](https://github.com/awaterma/phronesis/pull/180)).**
+  Warm up once, then measure five fresh fixtures and check their median against
+  the existing budgets. Up to two isolated scheduling spikes are tolerated;
+  a slow majority still fails. Deterministic policy tests cover both outcomes
+  and budget boundaries; this change does not claim a runtime speedup.
+- Document the MCP wire contract and refresh the generated rule catalogue's
+  version stamp to v0.42.1.
+
+## [0.42.0] - 2026-11-26
+
 ### Embedding hosts
 
 - Add `execute_agenda_items_for_fact` and `ExecutedActivation` under
